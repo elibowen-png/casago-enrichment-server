@@ -99,7 +99,7 @@ def parse_page(html):
             if h.startswith('mailto:'): mailto.append(h[7:].split('?')[0].strip())
             elif h.startswith('tel:'): tel.append(re.sub(r'\D','',h[4:]))
         text   = soup.get_text(' ', strip=True)
-        emails = clean_emails(mailto + EMAIL_RE.findall(html))
+        emails = clean_emails(mailto + EMAIL_RE.findall(html) + decode_obfuscated(text))
         phones = clean_phones(tel + PHONE_RE.findall(text))
         return emails, phones, text
     except BaseException:
@@ -265,7 +265,51 @@ def guess_email_patterns(first, last, domain):
     except BaseException:
         return []
 
-def timed_out(start, limit=90):
+OBFUSCATED_EMAIL_RE = re.compile(
+    r'([a-zA-Z0-9._%+\-]+)\s*(?:\[at\]|\(at\)|AT|at)\s*([a-zA-Z0-9.\-]+)\s*(?:\[dot\]|\(dot\)|DOT|dot)\s*([a-zA-Z]{2,})',
+    re.IGNORECASE
+)
+
+def decode_obfuscated(text):
+    """Detect emails written as 'john [at] company [dot] com'"""
+    found = []
+    try:
+        for m in OBFUSCATED_EMAIL_RE.finditer(text):
+            found.append(f'{m.group(1)}@{m.group(2)}.{m.group(3)}'.lower())
+    except BaseException: pass
+    return found
+
+def get_sitemap_contact_urls(base):
+    """Fetch sitemap.xml and return URLs that look like contact/about/team pages."""
+    keywords = ['contact','about','team','staff','leadership','people','management','owner','founder']
+    for path in ['/sitemap.xml', '/sitemap_index.xml']:
+        try:
+            html = fetch(base + path, timeout=8)
+            if not html: continue
+            urls = re.findall(r'<loc>(https?://[^<]+)</loc>', html)
+            matched = [u for u in urls if any(kw in u.lower() for kw in keywords)]
+            if matched:
+                print(f'  Sitemap → {len(matched)} contact-ish URLs')
+                return matched[:6]
+        except BaseException: pass
+    return []
+
+def fetch_results_pages(results, all_emails, all_phones, contacts, sources, label, start, limit=150, max_pages=4):
+    """Actually fetch and scrape the pages found in search results — not just snippets."""
+    fetched = 0
+    for r in results:
+        if timed_out(start, limit) or fetched >= max_pages: break
+        href = r.get('href','')
+        if not href or not href.startswith('http'): continue
+        if any(s in href for s in list(SKIP_DOMAINS) + ['google','bing','yahoo']): continue
+        if href in sources: continue
+        try:
+            scrape_and_collect(href, all_emails, all_phones, contacts, sources, label)
+            fetched += 1
+            time.sleep(0.4)
+        except BaseException: pass
+
+def timed_out(start, limit=150):
     return (time.time() - start) > limit
 
 def has_personal(emails):
@@ -314,8 +358,9 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     # ── 1. Find website ────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
+            site_results = google(f'"{company}" {market} property management vacation rental')
             if not website:
-                for r in google(f'"{company}" {market} property management vacation rental'):
+                for r in site_results:
                     href = r.get('href','')
                     m    = DOMAIN_RE.match(href)
                     if m:
@@ -324,9 +369,12 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                             website = href.split('?')[0].rstrip('/'); print(f'  Website: {website}'); break
                     all_emails += EMAIL_RE.findall(r.get('body',''))
                     all_phones += PHONE_RE.findall(r.get('body',''))
+                    all_emails += decode_obfuscated(r.get('body',''))
             if website:
                 m = DOMAIN_RE.match(website)
                 if m: domain = m.group(1).replace('www.','')
+            # Also fetch the actual pages from search results (not just snippets)
+            fetch_results_pages(site_results, all_emails, all_phones, contacts, sources, 'Web Search', start, max_pages=3)
         except BaseException as e:
             print(f'  Website find error: {e}')
 
@@ -336,7 +384,13 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         for path in CONTACT_PATHS:
             if timed_out(start): break
             scrape_and_collect(base+path, all_emails, all_phones, contacts, sources, 'Website')
-            time.sleep(0.25)
+            time.sleep(0.2)
+        # Sitemap discovery — find team/contact pages we might have missed
+        if not has_personal(all_emails) and not timed_out(start):
+            for url in get_sitemap_contact_urls(base):
+                if timed_out(start): break
+                scrape_and_collect(url, all_emails, all_phones, contacts, sources, 'Sitemap')
+                time.sleep(0.2)
 
     # ── 2.5 Direct domain email hunt ─────────────────────────────────────────
     if domain and not has_personal(all_emails) and not timed_out(start):
@@ -376,16 +430,25 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     # ── 3. LinkedIn ───────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
-            for r in google(f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker)'):
+            li_results = google(f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker OR "property manager")')
+            for r in li_results:
                 if timed_out(start): break
                 href, title, body = r.get('href',''), r.get('title',''), r.get('body','')
                 all_emails += EMAIL_RE.findall(body)
+                all_emails += decode_obfuscated(body)
                 if 'linkedin.com/in/' in href:
                     parts = title.split(' - ')
                     name  = parts[0].strip(); role = parts[1].strip() if len(parts)>1 else ''
                     if len(name.split())>=2 and len(name)<60:
                         add_contact(contacts, name, title=role, linkedin=href, source='LinkedIn')
                         print(f'  LinkedIn: {name}')
+            # Also search LinkedIn company page
+            for r in google(f'site:linkedin.com/company "{company}"'):
+                if timed_out(start): break
+                href, body = r.get('href',''), r.get('body','')
+                all_emails += EMAIL_RE.findall(body)
+                for name in extract_person_names(body):
+                    add_contact(contacts, name, source='LinkedIn Company')
         except BaseException as e:
             print(f'  LinkedIn error: {e}')
 
@@ -413,19 +476,39 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     # ── 4. Owner / contact searches ───────────────────────────────────────────
     if not timed_out(start):
         try:
-            for r in google(f'"{company}" {market} owner email phone contact'):
+            owner_results = google(f'"{company}" {market} owner email phone contact')
+            for r in owner_results:
                 if timed_out(start): break
                 body = r.get('body','')
                 all_emails += EMAIL_RE.findall(body)
+                all_emails += decode_obfuscated(body)
                 all_phones += PHONE_RE.findall(body)
                 for name in extract_person_names(body+' '+r.get('title','')):
                     add_contact(contacts, name, source='Web')
+            # Fetch actual pages from owner search results
+            fetch_results_pages(owner_results, all_emails, all_phones, contacts, sources, 'Owner Search', start, max_pages=3)
         except BaseException as e:
             print(f'  Owner search error: {e}')
 
+    # ── 4.5 Facebook business page ────────────────────────────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        try:
+            fb_results = google(f'site:facebook.com/pages "{company}" OR site:facebook.com "{company}" {market} property management')
+            for r in fb_results[:3]:
+                href, body = r.get('href',''), r.get('body','')
+                all_emails += EMAIL_RE.findall(body)
+                all_phones += PHONE_RE.findall(body)
+                for name in extract_person_names(body):
+                    add_contact(contacts, name, source='Facebook')
+                if href and 'facebook.com' in href:
+                    scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Facebook')
+                    time.sleep(0.4)
+        except BaseException as e:
+            print(f'  Facebook error: {e}')
+
     # ══ From here on, only continue if no personal email found yet ════════════
 
-    # ── 5. Directories: BBB, Yelp, Manta, Clutch ─────────────────────────────
+    # ── 5. Directories: BBB, Yelp, Manta, Clutch, HomeAdvisor ────────────────
     if not has_personal(all_emails) and not timed_out(start):
         print('  → No email yet, searching directories...')
         dir_queries = [
@@ -434,14 +517,22 @@ def do_enrich(company, market, website, airbnb_url, host_id):
             f'site:manta.com "{company}"',
             f'site:clutch.co "{company}"',
             f'site:thumbtack.com "{company}"',
+            f'site:homeadvisor.com "{company}"',
+            f'site:angieslist.com "{company}"',
+            f'"{company}" {market} property management "contact" email -site:airbnb.com -site:vrbo.com',
         ]
         for q in dir_queries:
             if has_personal(all_emails) or timed_out(start): break
             try:
-                for r in google(q, 5):
+                results = google(q, 5)
+                for r in results:
                     href = r.get('href','')
-                    all_emails += EMAIL_RE.findall(r.get('body',''))
-                    all_phones += PHONE_RE.findall(r.get('body',''))
+                    body = r.get('body','')
+                    all_emails += EMAIL_RE.findall(body)
+                    all_emails += decode_obfuscated(body)
+                    all_phones += PHONE_RE.findall(body)
+                    for name in extract_person_names(body):
+                        add_contact(contacts, name, source='Directory')
                     if href and not any(s in href for s in ['google','bing']):
                         scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Directory')
                         time.sleep(0.3)
@@ -451,11 +542,13 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     if not has_personal(all_emails) and not timed_out(start):
         print('  → Searching news and press...')
         try:
-            for r in google(f'"{company}" {market} (interview OR profile OR "property manager" OR founder OR owner) -site:airbnb.com'):
+            press_results = google(f'"{company}" {market} (interview OR profile OR "property manager" OR founder OR owner) -site:airbnb.com')
+            for r in press_results:
                 if has_personal(all_emails) or timed_out(start): break
                 href = r.get('href','')
                 body = r.get('body','')+' '+r.get('title','')
                 all_emails += EMAIL_RE.findall(body)
+                all_emails += decode_obfuscated(body)
                 all_phones += PHONE_RE.findall(body)
                 for name in extract_person_names(body):
                     add_contact(contacts, name, source='Press')
