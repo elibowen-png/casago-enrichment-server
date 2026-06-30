@@ -155,20 +155,37 @@ def guess_email_patterns(first, last, domain):
     except BaseException:
         return []
 
-def timed_out(start, limit=50):
+def timed_out(start, limit=90):
     return (time.time() - start) > limit
+
+def has_personal(emails):
+    return bool(split_emails(clean_emails(emails))[0])
+
+def add_contact(contacts, name, title='', linkedin='', source=''):
+    if name and not any(c['name']==name for c in contacts):
+        contacts.append({'name':name,'title':title,'linkedin':linkedin,'source':source})
+
+def scrape_and_collect(url, all_emails, all_phones, contacts, sources, label=''):
+    try:
+        html = fetch(url)
+        if not html: return
+        e, p, text = parse_page(html)
+        all_emails += e; all_phones += p; sources.append(url)
+        for name in extract_person_names(text):
+            add_contact(contacts, name, source=label or url)
+    except BaseException: pass
 
 # ── Core enrichment (runs in background thread) ────────────────────────────────
 
 def do_enrich(company, market, website, airbnb_url, host_id):
     print(f'\n══ Enriching: {company or host_id} / {market} ══')
-    start      = time.time()
+    start         = time.time()
     resolved_name = ''
     all_emails, all_phones, contacts, sources = [], [], [], []
     domain = ''
 
-    # 0. Airbnb name resolution
-    if (airbnb_url or host_id) and not timed_out(start):
+    # ── 0. Resolve Airbnb host name ───────────────────────────────────────────
+    if airbnb_url or host_id:
         try:
             ab_url = airbnb_url or f'https://www.airbnb.com/users/show/{host_id}'
             html   = fetch(ab_url)
@@ -184,7 +201,7 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         except BaseException as e:
             print(f'  Airbnb error: {e}')
 
-    # 1. Find website
+    # ── 1. Find website ────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
             if not website:
@@ -194,8 +211,7 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                     if m:
                         dom = m.group(1).lower().replace('www.','')
                         if not any(s in dom for s in SKIP_DOMAINS):
-                            website = href.split('?')[0].rstrip('/')
-                            print(f'  Website: {website}'); break
+                            website = href.split('?')[0].rstrip('/'); print(f'  Website: {website}'); break
                     all_emails += EMAIL_RE.findall(r.get('body',''))
                     all_phones += PHONE_RE.findall(r.get('body',''))
             if website:
@@ -204,26 +220,15 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         except BaseException as e:
             print(f'  Website find error: {e}')
 
-    # 2. Scrape website pages
+    # ── 2. Scrape website pages ───────────────────────────────────────────────
     if website and not timed_out(start):
-        try:
-            base = '/'.join(website.split('/')[:3])
-            for path in CONTACT_PATHS:
-                if timed_out(start): break
-                try:
-                    html = fetch(base + path)
-                    if not html: continue
-                    e, p, text = parse_page(html)
-                    all_emails += e; all_phones += p; sources.append(base + path)
-                    for name in extract_person_names(text):
-                        if not any(c['name']==name for c in contacts):
-                            contacts.append({'name':name,'title':'','linkedin':'','source':'Website'})
-                    time.sleep(0.3)
-                except BaseException: pass
-        except BaseException as e:
-            print(f'  Scrape error: {e}')
+        base = '/'.join(website.split('/')[:3])
+        for path in CONTACT_PATHS:
+            if timed_out(start): break
+            scrape_and_collect(base+path, all_emails, all_phones, contacts, sources, 'Website')
+            time.sleep(0.25)
 
-    # 3. LinkedIn
+    # ── 3. LinkedIn ───────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
             for r in google(f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker)'):
@@ -234,12 +239,12 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                     parts = title.split(' - ')
                     name  = parts[0].strip(); role = parts[1].strip() if len(parts)>1 else ''
                     if len(name.split())>=2 and len(name)<60:
-                        if not any(c['name']==name for c in contacts):
-                            contacts.append({'name':name,'title':role,'linkedin':href,'source':'LinkedIn'})
+                        add_contact(contacts, name, title=role, linkedin=href, source='LinkedIn')
+                        print(f'  LinkedIn: {name}')
         except BaseException as e:
             print(f'  LinkedIn error: {e}')
 
-    # 4. Owner search
+    # ── 4. Owner / contact searches ───────────────────────────────────────────
     if not timed_out(start):
         try:
             for r in google(f'"{company}" {market} owner email phone contact'):
@@ -248,43 +253,118 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                 all_emails += EMAIL_RE.findall(body)
                 all_phones += PHONE_RE.findall(body)
                 for name in extract_person_names(body+' '+r.get('title','')):
-                    if not any(c['name']==name for c in contacts):
-                        contacts.append({'name':name,'title':'','linkedin':'','source':'Web'})
+                    add_contact(contacts, name, source='Web')
         except BaseException as e:
             print(f'  Owner search error: {e}')
 
-    # 5. Deep search if no personal emails yet
-    current_personal, _ = split_emails(clean_emails(all_emails))
-    if not current_personal and not timed_out(start):
+    # ══ From here on, only continue if no personal email found yet ════════════
+
+    # ── 5. Directories: BBB, Yelp, Manta, Clutch ─────────────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        print('  → No email yet, searching directories...')
+        dir_queries = [
+            f'site:bbb.org "{company}" {market}',
+            f'site:yelp.com/biz "{company}" {market}',
+            f'site:manta.com "{company}"',
+            f'site:clutch.co "{company}"',
+            f'site:thumbtack.com "{company}"',
+        ]
+        for q in dir_queries:
+            if has_personal(all_emails) or timed_out(start): break
+            try:
+                for r in google(q, 5):
+                    href = r.get('href','')
+                    all_emails += EMAIL_RE.findall(r.get('body',''))
+                    all_phones += PHONE_RE.findall(r.get('body',''))
+                    if href and not any(s in href for s in ['google','bing']):
+                        scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Directory')
+                        time.sleep(0.3)
+            except BaseException: pass
+
+    # ── 6. News / press / interview mentions ──────────────────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        print('  → Searching news and press...')
         try:
-            print('  ⚡ Deep search...')
-            for r in google(f'"{company}" {market} (founded OR "owned by" OR owner) email'):
-                if timed_out(start): break
+            for r in google(f'"{company}" {market} (interview OR profile OR "property manager" OR founder OR owner) -site:airbnb.com'):
+                if has_personal(all_emails) or timed_out(start): break
+                href = r.get('href','')
                 body = r.get('body','')+' '+r.get('title','')
                 all_emails += EMAIL_RE.findall(body)
                 all_phones += PHONE_RE.findall(body)
                 for name in extract_person_names(body):
-                    if not any(c['name']==name for c in contacts):
-                        contacts.append({'name':name,'title':'Owner','linkedin':'','source':'Deep Search'})
+                    add_contact(contacts, name, source='Press')
+                if href and not any(s in href for s in list(SKIP_DOMAINS)+['google']):
+                    scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Press')
+                    time.sleep(0.3)
         except BaseException as e:
-            print(f'  Deep search error: {e}')
+            print(f'  News error: {e}')
 
-    # 6. Email pattern guessing
+    # ── 7. More owner name queries ─────────────────────────────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        print('  → Trying owner name queries...')
+        name_queries = [
+            f'"{company}" "owned by" OR "founded by" OR "started by" {market}',
+            f'"{company}" (CEO OR principal OR owner OR broker) site:linkedin.com OR site:facebook.com',
+            f'"{company}" {market} "meet our team" OR "about us" owner',
+            f'"{company}" {market} property manager name',
+        ]
+        for q in name_queries:
+            if has_personal(all_emails) or timed_out(start): break
+            try:
+                for r in google(q, 8):
+                    body = r.get('body','')+' '+r.get('title','')
+                    all_emails += EMAIL_RE.findall(body)
+                    all_phones += PHONE_RE.findall(body)
+                    for name in extract_person_names(body):
+                        add_contact(contacts, name, title='Owner', source='Deep Search')
+                    href = r.get('href','')
+                    if href and not any(s in href for s in list(SKIP_DOMAINS)+['google']):
+                        scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Deep')
+                        time.sleep(0.3)
+            except BaseException: pass
+
+    # ── 8. Crunchbase / business profiles ─────────────────────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        print('  → Searching business profiles...')
+        try:
+            for q in [
+                f'site:crunchbase.com "{company}"',
+                f'site:bizjournals.com "{company}" {market}',
+                f'"{company}" {market} "vacation rental" email contact -site:airbnb.com -site:vrbo.com',
+            ]:
+                if has_personal(all_emails) or timed_out(start): break
+                for r in google(q, 6):
+                    body = r.get('body','')+' '+r.get('title','')
+                    all_emails += EMAIL_RE.findall(body)
+                    for name in extract_person_names(body):
+                        add_contact(contacts, name, source='Profile')
+        except BaseException as e:
+            print(f'  Profile search error: {e}')
+
+    # ── 9. Email pattern guessing (runs always if domain known) ───────────────
     guessed = []
-    try:
-        for c in contacts[:5]:
+    if domain:
+        # From discovered contact names
+        for c in contacts[:8]:
             parts = c['name'].split()
-            if len(parts)>=2 and domain:
+            if len(parts) >= 2:
                 guessed += guess_email_patterns(parts[0], parts[-1], domain)
-    except BaseException: pass
+        # If still nothing, guess from company name words
+        if not has_personal(all_emails) and not guessed:
+            words = re.sub(r'[^a-z\s]','', company.lower()).split()
+            words = [w for w in words if len(w)>2 and w not in ('the','and','for','llc','inc')]
+            if words:
+                guessed += [f'{words[0]}@{domain}', f'owner@{domain}',
+                            f'manager@{domain}', f'{words[0][0]}{words[1] if len(words)>1 else ""}@{domain}']
 
-    all_clean   = clean_emails(all_emails)
+    all_clean        = clean_emails(all_emails)
     personal, generic = split_emails(all_clean)
-    phones_clean = clean_phones(all_phones)
-    guessed_clean = [g for g in dict.fromkeys(guessed) if g not in all_clean][:10]
+    phones_clean     = clean_phones(all_phones)
+    guessed_clean    = [g for g in dict.fromkeys(guessed) if g not in all_clean][:12]
 
     elapsed = round(time.time()-start, 1)
-    print(f'  ✓ {elapsed}s — personal:{len(personal)} generic:{len(generic)} phones:{len(phones_clean)} contacts:{len(contacts)}')
+    print(f'  ✓ {elapsed}s — personal:{len(personal)} generic:{len(generic)} '
+          f'phones:{len(phones_clean)} contacts:{len(contacts)} guessed:{len(guessed_clean)}')
 
     return {
         'emails':         personal[:12],
