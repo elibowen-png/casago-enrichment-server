@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PM Lead Prospecting — Casago</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --primary: #1a56a0; --primary-light: #e8f0fb; --accent: #e8913a;
+    --bg: #f5f6fa; --card: #fff; --border: #dde1ea; --text: #1a1d27;
+    --muted: #6b7280; --green: #16a34a; --red: #dc2626;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+
+  header { background: var(--primary); color: #fff; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+  .server-status { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; white-space: nowrap; cursor: pointer; }
+  .server-status:hover { opacity: 1; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; flex-shrink: 0; }
+  .dot.online { background: #4ade80; }
+  .dot.offline { background: #f87171; }
+  #headerStats { font-size: 12px; opacity: .7; }
+
+  /* Server URL modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal-card { background: #fff; border-radius: 12px; padding: 28px; width: 480px; max-width: 95vw; }
+  .modal-card h2 { font-size: 15px; font-weight: 700; margin-bottom: 6px; color: var(--text); }
+  .modal-card p { font-size: 13px; color: var(--muted); margin-bottom: 18px; line-height: 1.5; }
+  .modal-card input { width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-family: monospace; margin-bottom: 14px; }
+  .modal-card input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+  .modal-steps { background: #f8f9fc; border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; font-size: 12px; color: var(--text); line-height: 1.8; }
+  .modal-steps strong { color: var(--primary); }
+  .modal-btns { display: flex; gap: 8px; }
+  .modal-btns .btn { flex: 1; }
+
+  .app { display: flex; height: calc(100vh - 48px); }
+  .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  .panel { width: 420px; min-width: 420px; border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; display: none; flex-direction: column; }
+  .panel.open { display: flex; }
+
+  .toolbar { padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar input[type=text] { flex: 1; min-width: 150px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .toolbar select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: #fff; }
+  .btn { padding: 6px 13px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-outline { background: #fff; border: 1px solid var(--border); color: var(--text); }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-green { background: var(--green); color: #fff; }
+  .btn-sm { padding: 3px 9px; font-size: 12px; }
+
+  .stats { display: flex; gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
+  .stat { flex: 1; background: var(--card); padding: 8px 14px; text-align: center; }
+  .stat-val { font-size: 18px; font-weight: 700; color: var(--primary); }
+  .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+  .table-wrap { flex: 1; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { position: sticky; top: 0; z-index: 2; }
+  th { background: #f0f3f9; padding: 8px 11px; text-align: left; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none; }
+  th:hover { background: #e4e9f5; }
+  td { padding: 8px 11px; border-bottom: 1px solid #f0f1f5; vertical-align: middle; }
+  tr:hover td { background: #f7f9fd; cursor: pointer; }
+  tr.selected td { background: var(--primary-light); }
+  .company-name { font-weight: 600; color: var(--primary); }
+  .market-tag { display: inline-block; background: #e8f0fb; color: var(--primary); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .badge-new { background: #f3f4f6; color: #374151; }
+  .badge-contacted { background: #dbeafe; color: #1d4ed8; }
+  .badge-interested { background: #dcfce7; color: #15803d; }
+  .badge-not-interested { background: #fee2e2; color: #b91c1c; }
+  .badge-qualified { background: #fef9c3; color: #854d0e; }
+  .badge-closed { background: #f3e8ff; color: #6d28d9; }
+  .badge-enriched { background: #d1fae5; color: #065f46; font-size: 10px; padding: 1px 6px; }
+
+  .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; gap: 12px; color: var(--muted); }
+  .empty-icon { font-size: 44px; }
+  .empty h2 { font-size: 15px; font-weight: 600; color: var(--text); }
+  .empty p { font-size: 13px; max-width: 300px; text-align: center; }
+  .upload-zone { border: 2px dashed var(--border); border-radius: 10px; padding: 24px 36px; cursor: pointer; transition: border-color .2s; text-align: center; }
+  .upload-zone:hover { border-color: var(--primary); }
+  #fileInput { display: none; }
+
+  .panel-header { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: #fff; z-index: 1; }
+  .panel-header h2 { font-size: 14px; font-weight: 700; }
+  .close-btn { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--muted); }
+  .panel-body { padding: 14px; flex: 1; }
+  .field-group { margin-bottom: 13px; }
+  .field-group label { display: block; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin-bottom: 4px; }
+  .field-group input, .field-group select, .field-group textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: inherit; }
+  .field-group textarea { resize: vertical; min-height: 65px; }
+  .field-group input:focus, .field-group select:focus, .field-group textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+  .field-row { display: flex; gap: 8px; }
+  .field-row .field-group { flex: 1; }
+  .section-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin: 14px 0 8px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+
+  /* ── Enrichment box ── */
+  .enrich-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
+  .enrich-box-header { padding: 10px 12px; background: #f8f9fc; display: flex; align-items: center; justify-content: space-between; }
+  .enrich-box-header span { font-size: 12px; font-weight: 600; color: var(--text); }
+  .enrich-body { padding: 10px 12px; }
+  .enrich-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid #f3f4f6; }
+  .enrich-row:last-child { border-bottom: none; }
+  .enrich-val { font-size: 12px; color: var(--text); word-break: break-all; flex: 1; }
+  .enrich-source { font-size: 10px; color: var(--muted); }
+  .enrich-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+  .contact-card { background: #f8f9fc; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+  .contact-card-name { font-weight: 600; font-size: 13px; }
+  .contact-card-title { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .contact-card-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+
+  /* Quick links */
+  .quick-links { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+  .quick-link { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); font-size: 11px; color: var(--primary); text-decoration: none; background: #fff; cursor: pointer; }
+  .quick-link:hover { background: var(--primary-light); }
+
+  .save-bar { padding: 11px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; position: sticky; bottom: 0; background: #fff; }
+
+  /* Column mapper */
+  .mapper-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100; align-items: center; justify-content: center; }
+  .mapper-overlay.open { display: flex; }
+  .mapper-card { background: #fff; border-radius: 12px; padding: 26px; width: 500px; max-height: 90vh; overflow-y: auto; }
+  .mapper-card h2 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .mapper-card p { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .map-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .map-row label { width: 130px; font-size: 13px; font-weight: 500; flex-shrink: 0; }
+  .map-row select { flex: 1; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+
+  /* Bulk enrichment progress bar */
+  .bulk-progress { display: none; padding: 8px 14px; background: #fffbeb; border-bottom: 1px solid #fde68a; font-size: 12px; color: #92400e; }
+  .bulk-progress.show { display: flex; align-items: center; gap: 10px; }
+  .progress-bar-wrap { flex: 1; height: 6px; background: #fde68a; border-radius: 3px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+  .spinner-dark { border-color: rgba(0,0,0,.15); border-top-color: var(--primary); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1a1d27; color: #fff; padding: 9px 18px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 999; white-space: nowrap; }
+  .toast.show { opacity: 1; }
+  .sort-arrow { font-size: 10px; margin-left: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏡 PM Lead Prospecting</h1>
+  <div class="server-status" onclick="openServerModal()" title="Click to configure server URL">
+    <div class="dot" id="serverDot"></div>
+    <span id="serverLabel">Checking server...</span>
+    <span style="opacity:.6;font-size:11px">⚙</span>
+  </div>
+  <span id="headerStats">No leads loaded</span>
+</header>
+
+<!-- Bulk enrichment progress -->
+<div class="bulk-progress" id="bulkProgress">
+  <div class="spinner spinner-dark" style="border-top-color:var(--accent)"></div>
+  <span id="bulkLabel">Enriching leads...</span>
+  <div class="progress-bar-wrap"><div class="progress-bar-fill" id="bulkBar" style="width:0%"></div></div>
+  <button class="btn btn-sm btn-outline" onclick="stopBulk()">Stop</button>
+</div>
+
+<div class="app">
+  <div class="main">
+    <div class="toolbar">
+      <input type="text" id="searchInput" placeholder="Search company, market, contact..." oninput="applyFilters()">
+      <select id="marketFilter" onchange="applyFilters()"><option value="">All Markets</option></select>
+      <select id="statusFilter" onchange="applyFilters()">
+        <option value="">All Statuses</option>
+        <option value="New">New</option>
+        <option value="Contacted">Contacted</option>
+        <option value="Interested">Interested</option>
+        <option value="Qualified">Qualified</option>
+        <option value="Not Interested">Not Interested</option>
+        <option value="Closed">Closed</option>
+      </select>
+      <label class="btn btn-primary" for="fileInput">+ Import CSV / Excel</label>
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" onchange="handleFile(event)">
+      <button class="btn btn-green" onclick="bulkEnrich()" id="bulkBtn">⚡ Enrich All</button>
+      <button class="btn btn-outline" onclick="exportCSV()">Export CSV</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-val" id="statTotal">0</div><div class="stat-lbl">Leads</div></div>
+      <div class="stat"><div class="stat-val" id="statEnriched">0</div><div class="stat-lbl">Enriched</div></div>
+      <div class="stat"><div class="stat-val" id="statContacted">0</div><div class="stat-lbl">Contacted</div></div>
+      <div class="stat"><div class="stat-val" id="statInterested">0</div><div class="stat-lbl">Interested</div></div>
+      <div class="stat"><div class="stat-val" id="statQualified">0</div><div class="stat-lbl">Qualified</div></div>
+    </div>
+
+    <div class="table-wrap">
+      <div id="emptyState" class="empty">
+        <div class="empty-icon">📋</div>
+        <h2>No leads loaded yet</h2>
+        <p>Import an AirDNA CSV to get started.</p>
+        <label class="upload-zone" for="fileInput">
+          <div style="font-size:26px;margin-bottom:6px">📂</div>
+          <div style="font-weight:600;margin-bottom:3px">Click to upload AirDNA CSV or Excel</div>
+          <div style="font-size:11px;color:var(--muted)">.csv, .xlsx, .xls — drag &amp; drop works too</div>
+        </label>
+        <button class="btn btn-outline" onclick="addBlankLead()">+ Add manually</button>
+      </div>
+      <table id="leadsTable" style="display:none">
+        <thead>
+          <tr>
+            <th onclick="sortBy('company')">Company <span class="sort-arrow" id="sort-company"></span></th>
+            <th onclick="sortBy('market')">Market <span class="sort-arrow" id="sort-market"></span></th>
+            <th onclick="sortBy('listings')">Listings <span class="sort-arrow" id="sort-listings"></span></th>
+            <th onclick="sortBy('revenue')">Revenue <span class="sort-arrow" id="sort-revenue"></span></th>
+            <th onclick="sortBy('contactName')">Contact <span class="sort-arrow" id="sort-contactName"></span></th>
+            <th onclick="sortBy('status')">Status <span class="sort-arrow" id="sort-status"></span></th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- DETAIL PANEL -->
+  <div class="panel" id="detailPanel">
+    <div class="panel-header">
+      <h2 id="panelTitle">Lead Detail</h2>
+      <button class="close-btn" onclick="closePanel()">✕</button>
+    </div>
+    <div class="panel-body">
+
+      <div class="section-title">Company Info</div>
+      <div class="field-group">
+        <label>Company / Host Name</label>
+        <input type="text" id="f-company">
+      </div>
+      <div class="field-row">
+        <div class="field-group"><label>Market</label><input type="text" id="f-market"></div>
+        <div class="field-group"><label># Listings</label><input type="number" id="f-listings"></div>
+      </div>
+      <div class="field-row">
+        <div class="field-group"><label>Est. Revenue</label><input type="text" id="f-revenue"></div>
+        <div class="field-group"><label>Occupancy</label><input type="text" id="f-occupancy"></div>
+      </div>
+      <div class="field-group"><label>Website</label><input type="url" id="f-website" placeholder="https://..."></div>
+
+      <!-- ENRICHMENT -->
+      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Auto-Enrich Contact Info</span>
+        <button class="btn btn-accent btn-sm" onclick="enrichCurrentLead()" id="enrichBtn">⚡ Find Now</button>
+      </div>
+      <div id="enrichResults"></div>
+
+      <div class="section-title">Contact Info</div>
+      <div class="field-row">
+        <div class="field-group"><label>Contact Name</label><input type="text" id="f-contactName" placeholder="First Last"></div>
+        <div class="field-group"><label>Title</label><input type="text" id="f-contactTitle" placeholder="Owner, GM..."></div>
+      </div>
+      <div class="field-row">
+        <div class="field-group"><label>Email</label><input type="email" id="f-email"></div>
+        <div class="field-group"><label>Phone</label><input type="tel" id="f-phone"></div>
+      </div>
+      <div class="field-group"><label>LinkedIn</label><input type="url" id="f-linkedin" placeholder="https://linkedin.com/in/..."></div>
+
+      <div class="section-title">Manual Research Links</div>
+      <div class="quick-links" id="quickLinks"></div>
+
+      <div class="section-title">Outreach Tracking</div>
+      <div class="field-group">
+        <label>Status</label>
+        <select id="f-status">
+          <option value="New">New</option>
+          <option value="Contacted">Contacted</option>
+          <option value="Interested">Interested</option>
+          <option value="Qualified">Qualified</option>
+          <option value="Not Interested">Not Interested</option>
+          <option value="Closed">Closed</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field-group"><label>Last Contacted</label><input type="date" id="f-lastContact"></div>
+        <div class="field-group"><label>Follow Up</label><input type="date" id="f-followUp"></div>
+      </div>
+      <div class="field-group"><label>Notes</label><textarea id="f-notes" placeholder="Call notes, next steps..."></textarea></div>
+    </div>
+    <div class="save-bar">
+      <button class="btn btn-primary" onclick="saveLead()" style="flex:1">Save Changes</button>
+      <button class="btn btn-outline" onclick="deleteLead()" style="color:var(--red)">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- SERVER URL MODAL -->
+<div class="modal-overlay" id="serverModal">
+  <div class="modal-card">
+    <h2>Enrichment Server URL</h2>
+    <p>This tool needs a backend server to look up contact info. Paste the URL of your deployed server below. To get a free server URL, deploy to <strong>Render.com</strong> using the files in this package.</p>
+    <div class="modal-steps">
+      <strong>How to deploy the server (one-time setup):</strong><br>
+      1. Create a free account at <a href="https://render.com" target="_blank" style="color:var(--primary)">render.com</a><br>
+      2. Upload <code>pm_enrichment_server.py</code>, <code>requirements.txt</code>, and <code>Procfile</code> to a GitHub repo<br>
+      3. In Render → New → Web Service → connect the repo → Deploy<br>
+      4. Copy the <code>https://your-app.onrender.com</code> URL and paste it below<br>
+      5. Host <code>pm_prospecting_dashboard.html</code> on <a href="https://app.netlify.com/drop" target="_blank" style="color:var(--primary)">Netlify Drop</a> (free, drag &amp; drop)
+    </div>
+    <input type="url" id="serverUrlInput" placeholder="https://your-app.onrender.com">
+    <div class="modal-btns">
+      <button class="btn btn-primary" onclick="saveServerUrl()">Save &amp; Connect</button>
+      <button class="btn btn-outline" onclick="useLocalServer()">Use Local (localhost)</button>
+      <button class="btn btn-outline" onclick="closeServerModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- COLUMN MAPPER -->
+<div class="mapper-overlay" id="mapperOverlay">
+  <div class="mapper-card">
+    <h2>Map CSV Columns</h2>
+    <p>Match your AirDNA columns to the fields below.</p>
+    <div id="mapRows"></div>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button class="btn btn-primary" onclick="confirmMapping()" style="flex:1">Import Leads</button>
+      <button class="btn btn-outline" onclick="closeMapper()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const STORAGE_KEY = 'casago_pm_leads_v3';
+const SERVER_KEY  = 'casago_server_url';
+
+function getServer() {
+  return localStorage.getItem(SERVER_KEY) || '';
+}
+
+// ── Server URL modal ──────────────────────────────────────────────────────────
+function openServerModal() {
+  document.getElementById('serverUrlInput').value = getServer();
+  document.getElementById('serverModal').classList.add('open');
+}
+function closeServerModal() {
+  document.getElementById('serverModal').classList.remove('open');
+}
+function saveServerUrl() {
+  let url = document.getElementById('serverUrlInput').value.trim().replace(/\/$/, '');
+  if (!url) return;
+  if (!url.startsWith('http')) url = 'https://' + url;
+  localStorage.setItem(SERVER_KEY, url);
+  closeServerModal();
+  checkServer();
+}
+function useLocalServer() {
+  localStorage.setItem(SERVER_KEY, 'http://localhost:5001');
+  closeServerModal();
+  checkServer();
+}
+
+let allLeads = [], filteredLeads = [];
+let selectedId = null;
+let sortCol = 'listings', sortDir = -1;
+let csvHeaders = [], csvRawRows = [];
+let nextId = 1;
+let bulkStop = false;
+
+const FIELDS = [
+  { key: 'company',      label: 'Company / Host Name' },
+  { key: 'market',       label: 'Market' },
+  { key: 'listings',     label: '# Listings' },
+  { key: 'revenue',      label: 'Est. Revenue' },
+  { key: 'occupancy',    label: 'Avg Occupancy' },
+  { key: 'website',      label: 'PM Website' },
+  { key: 'airbnbUrl',   label: 'Airbnb Host URL' },
+  { key: 'contactName',  label: 'Contact Name' },
+  { key: 'contactTitle', label: 'Contact Title' },
+  { key: 'email',        label: 'Email' },
+  { key: 'phone',        label: 'Phone' },
+  { key: 'linkedin',     label: 'LinkedIn' },
+];
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+function saveLocal() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ allLeads, nextId })); } catch(e) {}
+}
+function loadLocal() {
+  try {
+    const d = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    if (d?.allLeads) { allLeads = d.allLeads; nextId = d.nextId || allLeads.length + 1; }
+  } catch(e) {}
+}
+
+// ── Server health ─────────────────────────────────────────────────────────────
+async function checkServer() {
+  const url = getServer();
+  if (!url) { setServerStatus(false, true); return; }
+  try {
+    const r = await fetch(url + '/ping', { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    setServerStatus(d.status === 'ok');
+  } catch {
+    setServerStatus(false);
+  }
+}
+function setServerStatus(online, notConfigured) {
+  const dot = document.getElementById('serverDot');
+  const lbl = document.getElementById('serverLabel');
+  dot.className = 'dot ' + (online ? 'online' : 'offline');
+  if (notConfigured) lbl.textContent = 'No server configured — click to set up';
+  else lbl.textContent = online ? 'Server online' : 'Server offline — click to configure';
+}
+setInterval(checkServer, 15000);
+checkServer();
+
+// ── File handling ─────────────────────────────────────────────────────────────
+function handleFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  const isExcel = file.name.match(/\.xlsx?$/i);
+  const reader = new FileReader();
+  if (isExcel) {
+    reader.onload = ev => parseExcel(ev.target.result);
+    reader.readAsArrayBuffer(file);
+  } else {
+    reader.onload = ev => {
+      const buf = ev.target.result;
+      const bytes = new Uint8Array(buf);
+      let text;
+      if ((bytes[0] === 0xFF && bytes[1] === 0xFE) || (bytes[0] === 0xFE && bytes[1] === 0xFF)) {
+        const enc = bytes[0] === 0xFF ? 'utf-16le' : 'utf-16be';
+        text = new TextDecoder(enc).decode(buf);
+      } else {
+        text = new TextDecoder('utf-8').decode(buf);
+      }
+      parseCSV(text);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+function parseExcel(buf) {
+  const wb = XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  if (rows.length < 2) return showToast('Excel file appears empty');
+  csvHeaders = rows[0].map(h => String(h).trim());
+  csvRawRows = rows.slice(1).map(r => csvHeaders.map((_,i) => String(r[i] ?? '').trim()));
+  openMapper();
+}
+function parseCSV(text) {
+  // Strip BOM if present
+  text = text.replace(/^﻿/, '');
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return showToast('CSV appears empty');
+  // Auto-detect delimiter: tab or comma
+  const firstLine = lines[0];
+  const delim = (firstLine.split('\t').length > firstLine.split(',').length) ? '\t' : ',';
+  csvHeaders = splitLine(lines[0], delim);
+  csvRawRows = lines.slice(1).filter(l => l.trim()).map(l => splitLine(l, delim));
+  openMapper();
+}
+function splitLine(line, delim) {
+  if (delim === '\t') return line.split('\t').map(s => s.trim());
+  const out = []; let cur = '', inQ = false;
+  for (const c of line) {
+    if (c === '"') inQ = !inQ;
+    else if (c === ',' && !inQ) { out.push(cur.trim()); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// ── Column mapper ─────────────────────────────────────────────────────────────
+function openMapper() {
+  const autoMap = key => {
+    return csvHeaders.find(h => {
+      const hl = h.toLowerCase();
+      if (key === 'company') return hl.includes('property manager') || hl === 'host' || hl === 'host name' || hl.includes('manager name') || hl.includes('company') || hl.includes('operator') || (hl.includes('host') && hl.includes('id'));
+      if (key === 'website') return hl.includes('pm url') || hl.includes('website') || (hl.includes('url') && !hl.includes('airbnb'));
+      if (key === 'airbnbUrl') return hl.includes('airbnb host url') || hl.includes('airbnb url');
+      if (key === 'market')  return hl.includes('market') || hl.includes('city') || hl.includes('location');
+      if (key === 'listings') return hl.includes('current listing') || hl.includes('listing') || hl.includes('properties') || hl.includes('units') || hl.includes('active');
+      if (key === 'revenue') return hl.includes('revenue') || hl.includes('earning');
+      if (key === 'occupancy') return hl.includes('occupanc') || hl.includes('occ');
+      return false;
+    }) || '(skip)';
+  };
+  const getSample = col => {
+    const idx = csvHeaders.indexOf(col);
+    if (idx < 0) return '';
+    return csvRawRows.slice(0,3).map(r => r[idx]).filter(Boolean).slice(0,2).join(' · ');
+  };
+  document.getElementById('mapRows').innerHTML = FIELDS.map(f => {
+    const auto = autoMap(f.key);
+    return `
+    <div class="map-row" style="flex-wrap:wrap">
+      <label style="padding-top:6px">${f.label}</label>
+      <div style="flex:1">
+        <select id="map-${f.key}" onchange="
+          const v=this.value;
+          const s=document.getElementById('prev-${f.key}');
+          if(v==='(skip)'){s.textContent='';return;}
+          const idx=csvHeaders.indexOf(v);
+          s.textContent=idx>=0?csvRawRows.slice(0,3).map(r=>r[idx]).filter(Boolean).slice(0,2).join(' · '):'';
+        ">
+          ${['(skip)', ...csvHeaders].map(h => `<option value="${esc(h)}" ${auto===h?'selected':''}>${esc(h)}</option>`).join('')}
+        </select>
+        <div id="prev-${f.key}" style="font-size:11px;color:#6b7280;margin-top:2px;font-style:italic;min-height:14px">${auto!=='(skip)'?esc(getSample(auto)):''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('mapperOverlay').classList.add('open');
+}
+function closeMapper() { document.getElementById('mapperOverlay').classList.remove('open'); }
+function confirmMapping() {
+  const mapping = {};
+  FIELDS.forEach(f => {
+    const v = document.getElementById('map-' + f.key).value;
+    if (v !== '(skip)') mapping[f.key] = csvHeaders.indexOf(v);
+  });
+  const newLeads = [];
+  csvRawRows.forEach(row => {
+    if (row.every(c => !c)) return;
+    const lead = blankLead();
+    FIELDS.forEach(f => { if (mapping[f.key] !== undefined) lead[f.key] = row[mapping[f.key]] || ''; });
+    if (lead.listings) lead.listings = parseInt(lead.listings.toString().replace(/\D/g,'')) || 0;
+    lead.company = (lead.company || '').trim();
+    if (!lead.company) return;
+    // Skip rows where company is purely a number (Host ID with no real name)
+    if (/^\d+$/.test(lead.company)) return;
+    // Store Airbnb URL separately for enrichment
+    if (lead.airbnbUrl && lead.airbnbUrl.includes('airbnb.com')) {
+      // already mapped
+    } else if (lead.website && lead.website.includes('airbnb.com/users')) {
+      lead.airbnbUrl = lead.website;
+      lead.website = '';
+    }
+    // Skip if fewer than 10 listings
+    if ((lead.listings || 0) < 10) return;
+    newLeads.push(lead);
+  });
+
+  // Keep only top 30 by listing count
+  newLeads.sort((a,b) => (Number(b.listings)||0) - (Number(a.listings)||0));
+  const top30 = newLeads.slice(0, 30);
+  top30.forEach(l => allLeads.push(l));
+
+  closeMapper();
+  saveLocal(); rebuildMarketFilter(); applyFilters(); updateStats();
+  showToast(`Imported top ${top30.length} leads by unit count (of ${newLeads.length} total)`);
+}
+
+// ── Render table ──────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('tableBody');
+  const empty = document.getElementById('emptyState');
+  const table = document.getElementById('leadsTable');
+  if (!filteredLeads.length) {
+    empty.style.display = allLeads.length ? 'none' : 'flex';
+    table.style.display = allLeads.length ? 'table' : 'none';
+    if (allLeads.length) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--muted)">No leads match your filters</td></tr>`;
+    return;
+  }
+  empty.style.display = 'none';
+  table.style.display = 'table';
+  tbody.innerHTML = filteredLeads.map(l => `
+    <tr onclick="selectLead(${l.id})" class="${l.id === selectedId ? 'selected' : ''}">
+      <td>
+        <div class="company-name">${esc(l.company || '—')}</div>
+        ${l.enriched ? '<span class="badge badge-enriched">enriched</span>' : ''}
+      </td>
+      <td><span class="market-tag">${esc(l.market || '—')}</span></td>
+      <td>${l.listings || '—'}</td>
+      <td>${fmtRev(l.revenue)}</td>
+      <td>${l.contactName
+        ? `<div style="font-size:12px;font-weight:500">${esc(l.contactName)}</div>
+           ${l.email ? `<div style="font-size:11px;color:var(--muted)">${esc(l.email)}</div>` : ''}
+           ${l.phone ? `<div style="font-size:11px;color:var(--muted)">${esc(l.phone)}</div>` : ''}`
+        : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
+      <td><span class="badge badge-${statusClass(l.status)}">${esc(l.status)}</span></td>
+      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)">${esc(l.notes || '')}</td>
+    </tr>`).join('');
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function statusClass(s) {
+  return {'New':'new','Contacted':'contacted','Interested':'interested','Qualified':'qualified','Not Interested':'not-interested','Closed':'closed'}[s] || 'new';
+}
+function fmtRev(v) {
+  if (!v) return '—';
+  const n = parseFloat(String(v).replace(/[^0-9.]/g,''));
+  if (isNaN(n)) return esc(v);
+  return n >= 1e6 ? '$'+(n/1e6).toFixed(1)+'M' : n >= 1000 ? '$'+Math.round(n/1000)+'K' : '$'+n.toFixed(0);
+}
+function sortBy(col) {
+  sortDir = sortCol === col ? sortDir * -1 : -1; sortCol = col;
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  const a = document.getElementById('sort-' + col); if (a) a.textContent = sortDir === 1 ? '▲' : '▼';
+  applyFilters();
+}
+function applyFilters() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  const mkt = document.getElementById('marketFilter').value;
+  const sta = document.getElementById('statusFilter').value;
+  filteredLeads = allLeads.filter(l => {
+    if (mkt && l.market !== mkt) return false;
+    if (sta && l.status !== sta) return false;
+    if (q && ![l.company,l.market,l.contactName,l.email,l.phone,l.notes].join(' ').toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b) => {
+    let av = a[sortCol]??'', bv = b[sortCol]??'';
+    if (sortCol==='listings') { av=Number(av)||0; bv=Number(bv)||0; }
+    else if (sortCol==='revenue') { av=parseFloat(String(av).replace(/[^0-9.]/g,''))||0; bv=parseFloat(String(bv).replace(/[^0-9.]/g,''))||0; }
+    else { av=String(av).toLowerCase(); bv=String(bv).toLowerCase(); }
+    return av<bv ? -sortDir : av>bv ? sortDir : 0;
+  });
+  renderTable(); updateStats();
+}
+function rebuildMarketFilter() {
+  const markets = [...new Set(allLeads.map(l=>l.market).filter(Boolean))].sort();
+  const sel = document.getElementById('marketFilter'); const cur = sel.value;
+  sel.innerHTML = '<option value="">All Markets</option>' + markets.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  if (markets.includes(cur)) sel.value = cur;
+}
+function updateStats() {
+  document.getElementById('statTotal').textContent = allLeads.length;
+  document.getElementById('statEnriched').textContent = allLeads.filter(l=>l.enriched).length;
+  document.getElementById('statContacted').textContent = allLeads.filter(l=>l.status==='Contacted').length;
+  document.getElementById('statInterested').textContent = allLeads.filter(l=>l.status==='Interested').length;
+  document.getElementById('statQualified').textContent = allLeads.filter(l=>l.status==='Qualified').length;
+  document.getElementById('headerStats').textContent = `${allLeads.length} leads · ${new Set(allLeads.map(l=>l.market).filter(Boolean)).size} markets`;
+}
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function selectLead(id) {
+  selectedId = id;
+  const lead = allLeads.find(l => l.id === id);
+  if (!lead) return;
+  document.getElementById('detailPanel').classList.add('open');
+  document.getElementById('panelTitle').textContent = lead.company || 'Unnamed Lead';
+  ['company','market','listings','revenue','occupancy','website','contactName','contactTitle','email','phone','linkedin','status','notes','lastContact','followUp']
+    .forEach(k => { const el = document.getElementById('f-'+k); if (el) el.value = lead[k] ?? ''; });
+  document.getElementById('enrichResults').innerHTML = '';
+  renderQuickLinks(lead);
+  renderTable();
+}
+function closePanel() {
+  document.getElementById('detailPanel').classList.remove('open');
+  selectedId = null; renderTable();
+}
+function saveLead() {
+  const lead = allLeads.find(l => l.id === selectedId); if (!lead) return;
+  ['company','market','listings','revenue','occupancy','website','contactName','contactTitle','email','phone','linkedin','status','notes','lastContact','followUp']
+    .forEach(k => { const el = document.getElementById('f-'+k); if (el) lead[k] = el.value; });
+  if (lead.listings) lead.listings = parseInt(lead.listings)||0;
+  document.getElementById('panelTitle').textContent = lead.company || 'Unnamed Lead';
+  saveLocal(); rebuildMarketFilter(); applyFilters(); showToast('Saved');
+}
+function deleteLead() {
+  if (!confirm('Delete this lead?')) return;
+  allLeads = allLeads.filter(l => l.id !== selectedId);
+  closePanel(); saveLocal(); rebuildMarketFilter(); applyFilters(); showToast('Lead deleted');
+}
+function blankLead() {
+  return { id: nextId++, status:'New', enriched:false, notes:'', contactName:'', email:'', phone:'', linkedin:'', website:'', contactTitle:'', occupancy:'', followUp:'', lastContact:'', company:'', market:'', listings:0, revenue:'' };
+}
+function addBlankLead() {
+  const lead = blankLead(); lead.company = 'New Lead';
+  allLeads.unshift(lead); saveLocal(); rebuildMarketFilter(); applyFilters(); selectLead(lead.id);
+}
+
+// ── Quick research links ──────────────────────────────────────────────────────
+function renderQuickLinks(lead) {
+  const name = lead.company || '', market = lead.market || '';
+  const domain = lead.website ? lead.website.replace(/https?:\/\//,'').split('/')[0] : '';
+  const q = encodeURIComponent;
+  const links = [
+    { label:'💼 LinkedIn Company', url:`https://www.linkedin.com/search/results/companies/?keywords=${q(name)}` },
+    { label:'👤 LinkedIn People',  url:`https://www.linkedin.com/search/results/people/?keywords=${q(name+' '+market)}&titleFilter=%5B%22Owner%22%2C%22Founder%22%2C%22CEO%22%5D` },
+    { label:'🔗 LI via Google',    url:`https://www.google.com/search?q=site:linkedin.com/in+${q('"'+name+'"')}+(owner+OR+founder+OR+CEO)` },
+    { label:'📧 Email search',     url:`https://www.google.com/search?q=${q('"'+name+'" '+market+' (email OR contact)')}` },
+    { label:'📞 Phone search',     url:`https://www.google.com/search?q=${q('"'+name+'" '+market+' (phone OR "contact us")')}` },
+    { label:'🗺 Google Maps',      url:`https://www.google.com/maps/search/${q(name+' '+market)}` },
+    { label:'⭐ Yelp',             url:`https://www.yelp.com/search?find_desc=${q(name)}&find_loc=${q(market)}` },
+    { label:'🏛 BBB',              url:`https://www.bbb.org/search?find_text=${q(name)}&find_country=USA&find_loc=${q(market)}` },
+    ...(domain ? [{ label:'🌐 Contact page', url:`https://${domain}/contact` }] : []),
+    ...(website ? [{ label:'🌐 Website', url:website }] : []),
+  ];
+  document.getElementById('quickLinks').innerHTML = links.map(l=>
+    `<a class="quick-link" href="${l.url}" target="_blank" rel="noopener">${l.label}</a>`).join('');
+}
+
+// ── Enrichment ────────────────────────────────────────────────────────────────
+async function callEnrich(company, market, website, airbnbUrl, hostId) {
+  const server = getServer();
+  if (!server) throw new Error('no_server');
+  const params = new URLSearchParams({ company, market, website: website||'', airbnb_url: airbnbUrl||'', host_id: hostId||'' });
+
+  // Start the job — returns immediately with a job_id
+  const r = await fetch(`${server}/enrich?${params}`, { signal: AbortSignal.timeout(10000) });
+  const { job_id, error } = await r.json();
+  if (error) throw new Error(error);
+
+  // Poll /status/<job_id> every 2s until done (max 90s)
+  for (let i = 0; i < 45; i++) {
+    await new Promise(res => setTimeout(res, 2000));
+    const sr = await fetch(`${server}/status/${job_id}`, { signal: AbortSignal.timeout(5000) });
+    const job = await sr.json();
+    if (job.status === 'done')  return job.result;
+    if (job.status === 'error') throw new Error(job.result?.error || 'Enrichment failed');
+  }
+  throw new Error('Enrichment timed out after 90 seconds');
+}
+
+async function enrichCurrentLead() {
+  const lead = allLeads.find(l => l.id === selectedId); if (!lead) return;
+  const btn = document.getElementById('enrichBtn');
+  btn.innerHTML = '<span class="spinner"></span>';
+  btn.disabled = true;
+  const box = document.getElementById('enrichResults');
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">Searching — this takes 15–30 seconds...</div>';
+  try {
+    const data = await callEnrich(
+      document.getElementById('f-company').value || lead.company,
+      document.getElementById('f-market').value  || lead.market,
+      document.getElementById('f-website').value || lead.website,
+      lead.airbnbUrl, lead.hostId
+    );
+    renderEnrichResults(data, lead);
+  } catch(e) {
+    if (e.message === 'no_server') {
+      box.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px 0">⚠ No server configured. <button class="btn btn-sm btn-primary" onclick="openServerModal()">Set Server URL</button></div>`;
+    } else {
+      box.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px 0">⚠ Could not reach server. <button class="btn btn-sm btn-outline" onclick="openServerModal()">Check URL</button></div>`;
+    }
+  }
+  btn.innerHTML = '⚡ Find Now'; btn.disabled = false;
+}
+
+function renderEnrichResults(data, lead) {
+  const box = document.getElementById('enrichResults');
+  if (!data || data.error) { box.innerHTML = `<div style="color:var(--red);font-size:12px">${esc(data?.error||'No data returned')}</div>`; return; }
+
+  const { emails=[], generic_emails=[], phones=[], contacts=[], guessed_emails=[], website='' } = data;
+
+  let html = '';
+
+  // Website auto-fill
+  if (website && !document.getElementById('f-website').value) {
+    document.getElementById('f-website').value = website;
+    renderQuickLinks({ ...lead, website });
+  }
+
+  // Found contacts (LinkedIn)
+  if (contacts.length) {
+    html += `<div class="enrich-box"><div class="enrich-box-header"><span>👤 Executives / Owners Found (${contacts.length})</span></div><div class="enrich-body">`;
+    contacts.forEach((c,i) => {
+      html += `<div class="contact-card">
+        <div class="contact-card-name">${esc(c.name)}</div>
+        <div class="contact-card-title">${esc(c.title||'')}<span style="color:var(--muted);font-size:10px"> · ${esc(c.source)}</span></div>
+        <div class="contact-card-actions">
+          <button class="btn btn-sm btn-primary" onclick="useContact(${i})">Use as Contact</button>
+          ${c.linkedin ? `<a class="btn btn-sm btn-outline" href="${esc(c.linkedin)}" target="_blank">LinkedIn ↗</a>` : ''}
+        </div>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Personal emails
+  if (emails.length) {
+    html += `<div class="enrich-box"><div class="enrich-box-header"><span>📧 Direct Emails (${emails.length})</span></div><div class="enrich-body">`;
+    emails.forEach(e => {
+      html += `<div class="enrich-row"><span class="enrich-val">${esc(e)}</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Generic catch-all emails
+  if (generic_emails.length) {
+    html += `<div class="enrich-box"><div class="enrich-box-header"><span style="color:var(--muted)">📬 Generic Emails (catch-all — not personal)</span></div><div class="enrich-body">`;
+    generic_emails.forEach(e => {
+      html += `<div class="enrich-row"><span class="enrich-val" style="color:var(--muted)">${esc(e)}</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Phones found
+  if (phones.length) {
+    html += `<div class="enrich-box"><div class="enrich-box-header"><span>📞 Phone Numbers Found (${phones.length})</span></div><div class="enrich-body">`;
+    phones.forEach(p => {
+      html += `<div class="enrich-row"><span class="enrich-val">${esc(p)}</span><button class="btn btn-sm btn-outline" onclick="usePhone('${esc(p)}')">Use</button></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Guessed emails
+  if (guessed_emails.length) {
+    html += `<div class="enrich-box"><div class="enrich-box-header"><span>🔮 Likely Emails (guessed from name + domain)</span></div><div class="enrich-body">`;
+    guessed_emails.forEach(e => {
+      html += `<div class="enrich-row"><span class="enrich-val">${esc(e)}</span><span class="enrich-source">pattern guess</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  if (!emails.length && !phones.length && !contacts.length && !guessed_emails.length) {
+    html = '<div style="font-size:12px;color:var(--muted);padding:8px 0">Nothing found automatically. Try the manual research links below.</div>';
+  }
+
+  box.innerHTML = html;
+
+  // Update company name if resolved from Airbnb
+  if (data.resolved_name && (lead.company.startsWith('Host #') || lead.company.startsWith('Airbnb Host'))) {
+    lead.company = data.resolved_name;
+    document.getElementById('f-company').value = data.resolved_name;
+    document.getElementById('panelTitle').textContent = data.resolved_name;
+  }
+  // Mark lead as enriched and save
+  lead.enriched = true;
+  if (website && !lead.website) lead.website = website;
+  saveLocal(); updateStats(); renderTable();
+
+  // Store data on lead object for useContact()
+  window._lastEnrichData = data;
+}
+
+function useContact(idx) {
+  const data = window._lastEnrichData; if (!data) return;
+  const c = data.contacts[idx]; if (!c) return;
+  document.getElementById('f-contactName').value  = c.name  || '';
+  document.getElementById('f-contactTitle').value = c.title || '';
+  document.getElementById('f-linkedin').value     = c.linkedin || '';
+  showToast('Contact filled in — save when ready');
+}
+function useEmail(e) {
+  document.getElementById('f-email').value = e;
+  showToast('Email filled in');
+}
+function usePhone(p) {
+  document.getElementById('f-phone').value = p;
+  showToast('Phone filled in');
+}
+
+// ── Bulk enrichment ───────────────────────────────────────────────────────────
+async function bulkEnrich() {
+  const unenriched = allLeads.filter(l => !l.enriched);
+  if (!unenriched.length) return showToast('All leads already enriched');
+  bulkStop = false;
+  const prog = document.getElementById('bulkProgress');
+  const label = document.getElementById('bulkLabel');
+  const bar   = document.getElementById('bulkBar');
+  prog.classList.add('show');
+  const total = unenriched.length;
+  for (let i = 0; i < unenriched.length; i++) {
+    if (bulkStop) break;
+    const lead = unenriched[i];
+    label.textContent = `Enriching ${i+1}/${total}: ${lead.company}`;
+    bar.style.width = Math.round((i/total)*100) + '%';
+    try {
+      const data = await callEnrich(lead.company, lead.market, lead.website||'', lead.airbnbUrl, lead.hostId);
+      if (data.resolved_name && (lead.company.startsWith('Host #') || lead.company.startsWith('Airbnb Host'))) lead.company = data.resolved_name;
+      if (data.emails?.[0] && !lead.email)       lead.email       = data.emails[0];
+      if (data.phones?.[0] && !lead.phone)       lead.phone       = data.phones[0];
+      if (data.contacts?.[0] && !lead.contactName) {
+        lead.contactName  = data.contacts[0].name;
+        lead.contactTitle = data.contacts[0].title || '';
+        lead.linkedin     = data.contacts[0].linkedin || '';
+      }
+      if (data.website && !lead.website) lead.website = data.website;
+      lead.enriched = true;
+      saveLocal();
+    } catch {}
+    updateStats(); renderTable();
+    await new Promise(r => setTimeout(r, 1500)); // be polite to the server
+  }
+  bar.style.width = '100%';
+  label.textContent = bulkStop ? 'Stopped.' : 'Done!';
+  setTimeout(() => prog.classList.remove('show'), 3000);
+  showToast(bulkStop ? 'Enrichment stopped' : `Enriched ${total} leads`);
+}
+function stopBulk() { bulkStop = true; }
+
+// ── Export ────────────────────────────────────────────────────────────────────
+function exportCSV() {
+  if (!allLeads.length) return showToast('No leads to export');
+  const keys = ['company','market','listings','revenue','occupancy','website','contactName','contactTitle','email','phone','linkedin','status','enriched','lastContact','followUp','notes'];
+  const hdrs = ['Company','Market','Listings','Est Revenue','Occupancy','Website','Contact Name','Contact Title','Email','Phone','LinkedIn','Status','Enriched','Last Contacted','Follow Up','Notes'];
+  const rows = allLeads.map(l => keys.map(k => `"${String(l[k]??'').replace(/"/g,'""')}"`).join(','));
+  const csv = [hdrs.join(','), ...rows].join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download = `casago_pm_leads_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let _tt;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(_tt); _tt = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile({ target: { files: [file], value: '' } });
+});
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePanel();
+  if ((e.metaKey||e.ctrlKey) && e.key === 's' && selectedId) { e.preventDefault(); saveLead(); }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadLocal(); rebuildMarketFilter(); applyFilters(); updateStats();
+document.getElementById('sort-listings').textContent = '▼';
+// Show server setup on first load if not configured
+if (!getServer()) setTimeout(openServerModal, 800);
+</script>
+</body>
+</html>
