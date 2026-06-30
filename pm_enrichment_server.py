@@ -299,6 +299,85 @@ def get_sitemap_contact_urls(base):
         except BaseException: pass
     return []
 
+ABOUT_PATHS = [
+    '/about', '/about-us', '/our-story', '/who-we-are', '/founders',
+    '/our-team', '/team', '/meet-the-team', '/staff', '/leadership',
+    '/people', '/management', '/owners', '/ownership', '/about/team',
+]
+
+ABOUT_NAME_PATTERNS = [
+    # "Hi, I'm Jane Smith" / "My name is Jane Smith"
+    r"(?:Hi[,!]?\s+I'?m|My name is|I am)\s+([A-Z][a-z]+ [A-Z][a-z]+)",
+    # "Jane Smith founded / started / created / owns"
+    r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(?:founded|started|created|owns|launched|established|built|runs|operates)',
+    # "founded/owned/run by Jane Smith"
+    r'(?:founded|owned|operated|managed|run|led)\s+by\s+([A-Z][a-z]+ [A-Z][a-z]+)',
+    # "owner Jane Smith" / "founder Jane Smith"
+    r'(?:owner|founder|CEO|president|principal|broker|host|operator)[,:\s]+([A-Z][a-z]+ [A-Z][a-z]+)',
+    # "Jane Smith, owner/founder"
+    r'([A-Z][a-z]+ [A-Z][a-z]+)\s*[,\-]\s*(?:owner|founder|CEO|president|principal|broker|operator|host)',
+    # "Meet Jane Smith" / "About Jane Smith"
+    r'(?:Meet|About|Introducing)\s+([A-Z][a-z]+ [A-Z][a-z]+)',
+    # "Jane Smith has been managing..."
+    r'([A-Z][a-z]+ [A-Z][a-z]+)\s+has\s+been\s+(?:managing|running|operating|hosting)',
+    # "contact Jane Smith at" / "reach Jane Smith"
+    r'(?:contact|reach|email)\s+([A-Z][a-z]+ [A-Z][a-z]+)\s+(?:at|directly|for)',
+]
+
+def deep_scrape_about(base, all_emails, all_phones, contacts, sources):
+    """Aggressively scrape about/team pages to extract owner names and emails."""
+    print('  → Deep-scraping about/team pages for owner name...')
+    found_names = []
+    for path in ABOUT_PATHS:
+        try:
+            url = base + path
+            if url in sources: continue
+            html = fetch(url, timeout=10)
+            if not html: continue
+            sources.append(url)
+            soup = BeautifulSoup(html, 'html.parser')
+            for t in soup(['script','style','head','noscript','nav','footer']): t.decompose()
+
+            # 1. Extract emails
+            mailto_emails = [a['href'][7:].split('?')[0].strip()
+                             for a in soup.find_all('a', href=True) if a['href'].startswith('mailto:')]
+            page_emails = clean_emails(mailto_emails + EMAIL_RE.findall(html))
+            all_emails += page_emails
+
+            # 2. Extract phones
+            text = soup.get_text(' ', strip=True)
+            all_phones += clean_phones(PHONE_RE.findall(text))
+
+            # 3. Names from headings — h1/h2/h3 on about pages often ARE the owner name
+            for tag in soup.find_all(['h1','h2','h3']):
+                t = tag.get_text(strip=True)
+                if is_real_person_name(t):
+                    add_contact(contacts, t, source='About Page (heading)')
+                    found_names.append(t)
+
+            # 4. Names from specific about-page patterns
+            for pat in ABOUT_NAME_PATTERNS:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    candidate = m.group(1).strip()
+                    if is_real_person_name(candidate):
+                        add_contact(contacts, candidate, source='About Page')
+                        found_names.append(candidate)
+
+            # 5. Names from structured markup (schema.org Person, author tags)
+            for el in soup.select('[itemprop="name"], [class*="author"], [class*="founder"], [class*="owner"], [class*="ceo"]'):
+                t = el.get_text(strip=True)
+                if is_real_person_name(t):
+                    add_contact(contacts, t, source='About Page (schema)')
+                    found_names.append(t)
+
+            if found_names:
+                print(f'  About page {path} → names: {found_names[:3]}')
+                break  # Stop once we find names on an about page
+            time.sleep(0.2)
+        except BaseException as e:
+            print(f'  About scrape error {path}: {type(e).__name__}')
+    return found_names
+
 def fetch_results_pages(results, all_emails, all_phones, contacts, sources, label, start, limit=150, max_pages=4):
     """Actually fetch and scrape the pages found in search results — not just snippets."""
     fetched = 0
@@ -425,20 +504,25 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         except BaseException as e:
             print(f'  Website find error: {e}')
 
-    # Scrape every contact/about/team page on the website
+    # Scrape website — about pages first (deep name extraction), then rest
     if website and not timed_out(start):
-        print('  Phase 1b: Scraping website pages...')
         base = '/'.join(website.split('/')[:3])
+        # Deep about-page scrape — priority: find owner name
+        print('  Phase 1b: Deep-scraping about pages for owner name...')
+        deep_scrape_about(base, all_emails, all_phones, contacts, sources)
+        # Then scrape remaining contact paths
         for path in CONTACT_PATHS:
             if timed_out(start): break
+            if base + path in sources: continue
             scrape_and_collect(base + path, all_emails, all_phones, contacts, sources, 'Website')
             time.sleep(0.2)
         # Sitemap — find team/contact pages not in the standard paths
         if not timed_out(start):
             for url in get_sitemap_contact_urls(base):
                 if timed_out(start): break
-                scrape_and_collect(url, all_emails, all_phones, contacts, sources, 'Sitemap')
-                time.sleep(0.2)
+                if url not in sources:
+                    scrape_and_collect(url, all_emails, all_phones, contacts, sources, 'Sitemap')
+                    time.sleep(0.2)
 
     # If domain found, search for any exposed email at that domain
     if domain and not timed_out(start):
