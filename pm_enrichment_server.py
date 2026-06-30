@@ -76,9 +76,16 @@ def clean_phones(raw):
         except BaseException: pass
     return sorted(out)
 
-def fetch(url, timeout=8):
+SCRAPER_KEY = os.environ.get('SCRAPER_API_KEY', '')
+
+def fetch(url, timeout=12):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        # Route through ScraperAPI if key is set (bypasses IP blocks on search engines)
+        if SCRAPER_KEY and any(s in url for s in ['google.com/search', 'bing.com/search', 'duckduckgo.com/html']):
+            proxy_url = f'http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={requests.utils.quote(url, safe="")}'
+            r = requests.get(proxy_url, timeout=30)
+        else:
+            r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         if r.status_code == 200:
             return r.text[:400_000]
     except BaseException as e:
@@ -483,6 +490,7 @@ def debug():
                 'html_bytes': len(html) if html else 0,
                 'results_found': len(results),
                 'results': results[:3],
+                'raw_sample': html[:3000] if html else '',
             }
         except BaseException as e:
             out['engines'][name] = {'error': str(e)}
