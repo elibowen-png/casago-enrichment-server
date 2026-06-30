@@ -315,9 +315,19 @@ def timed_out(start, limit=150):
 def has_personal(emails):
     return bool(split_emails(clean_emails(emails))[0])
 
+JUNK_NAMES = {'john doe','jane doe','first last','your name','full name','contact us',
+              'property manager','vacation rental','real estate','the owner'}
+
 def add_contact(contacts, name, title='', linkedin='', source=''):
-    if name and not any(c['name']==name for c in contacts):
-        contacts.append({'name':name,'title':title,'linkedin':linkedin,'source':source})
+    """Add a contact only if the name looks like a real person and isn't already listed."""
+    if not name: return
+    nl = name.lower().strip()
+    if nl in JUNK_NAMES: return
+    if len(name.split()) < 2 or len(name) > 60: return
+    # Skip if it looks like a company name (all caps words, LLC, Inc, etc.)
+    if re.search(r'\b(LLC|Inc|Corp|Co\.|Properties|Management|Rentals|Vacation)\b', name): return
+    if not any(c['name'] == name for c in contacts):
+        contacts.append({'name': name, 'title': title, 'linkedin': linkedin, 'source': source})
 
 def scrape_and_collect(url, all_emails, all_phones, contacts, sources, label=''):
     try:
@@ -430,25 +440,52 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     # ── 3. LinkedIn ───────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
-            li_results = google(f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker OR "property manager")')
+            company_lower = company.lower()
+            # Words that are too generic to trust alone (would match thousands of profiles)
+            generic_words = {'landing','city','home','homes','premier','elite','luxury',
+                             'coastal','mountain','beach','lake','urban','capital','summit',
+                             'harbor','harbour','sunrise','sunset','premier','signature'}
+            company_words = [w for w in re.sub(r'[^a-z\s]','',company_lower).split() if len(w)>2]
+            is_generic_name = all(w in generic_words for w in company_words[:2]) if company_words else True
+
+            # If domain known, use that — far more specific than company name alone
+            if domain:
+                li_query = f'site:linkedin.com/in "{domain}" OR site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager")'
+            elif is_generic_name:
+                # Generic names need the market to narrow results
+                li_query = f'site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager" OR "vacation rental")'
+            else:
+                li_query = f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker OR "property manager")'
+
+            li_results = google(li_query)
             for r in li_results:
                 if timed_out(start): break
                 href, title, body = r.get('href',''), r.get('title',''), r.get('body','')
+                combined = (title + ' ' + body).lower()
                 all_emails += EMAIL_RE.findall(body)
                 all_emails += decode_obfuscated(body)
                 if 'linkedin.com/in/' in href:
                     parts = title.split(' - ')
-                    name  = parts[0].strip(); role = parts[1].strip() if len(parts)>1 else ''
-                    if len(name.split())>=2 and len(name)<60:
+                    name  = parts[0].strip()
+                    role  = parts[1].strip() if len(parts) > 1 else ''
+                    # Validate: snippet must mention the company name or domain to be relevant
+                    name_match = any(w in combined for w in company_words if len(w) > 3)
+                    domain_match = domain and domain.split('.')[0] in combined
+                    if not (name_match or domain_match):
+                        print(f'  Skipping unrelated LinkedIn: {name}')
+                        continue
+                    if len(name.split()) >= 2 and len(name) < 60:
                         add_contact(contacts, name, title=role, linkedin=href, source='LinkedIn')
-                        print(f'  LinkedIn: {name}')
-            # Also search LinkedIn company page
-            for r in google(f'site:linkedin.com/company "{company}"'):
+                        print(f'  LinkedIn: {name} ({role})')
+
+            # LinkedIn company page search — also require company name in snippet
+            for r in google(f'site:linkedin.com/company "{company}" {market}'):
                 if timed_out(start): break
                 href, body = r.get('href',''), r.get('body','')
                 all_emails += EMAIL_RE.findall(body)
                 for name in extract_person_names(body):
-                    add_contact(contacts, name, source='LinkedIn Company')
+                    if any(w in body.lower() for w in company_words if len(w) > 3):
+                        add_contact(contacts, name, source='LinkedIn Company')
         except BaseException as e:
             print(f'  LinkedIn error: {e}')
 
