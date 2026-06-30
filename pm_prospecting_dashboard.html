@@ -215,6 +215,7 @@
             <th onclick="sortBy('contactName')">Contact <span class="sort-arrow" id="sort-contactName"></span></th>
             <th onclick="sortBy('status')">Status <span class="sort-arrow" id="sort-status"></span></th>
             <th>Notes</th>
+            <th style="width:36px"></th>
           </tr>
         </thead>
         <tbody id="tableBody"></tbody>
@@ -495,6 +496,14 @@ function openMapper() {
   };
   document.getElementById('mapRows').innerHTML = FIELDS.map(f => {
     const auto = autoMap(f.key);
+    // Market gets a special manual-type override input
+    const marketExtra = f.key === 'market' ? `
+      <div style="margin-top:6px;display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:#6b7280;white-space:nowrap">Or type market:</span>
+        <input type="text" id="market-override" placeholder="e.g. Bethany Beach, DE"
+          style="flex:1;padding:5px 8px;border:1px solid #dde1ea;border-radius:5px;font-size:13px;"
+          oninput="document.getElementById('map-market').value='(skip)';document.getElementById('prev-market').textContent='';">
+      </div>` : '';
     return `
     <div class="map-row" style="flex-wrap:wrap">
       <label style="padding-top:6px">${f.label}</label>
@@ -503,12 +512,14 @@ function openMapper() {
           const v=this.value;
           const s=document.getElementById('prev-${f.key}');
           if(v==='(skip)'){s.textContent='';return;}
+          ${f.key==='market' ? "document.getElementById('market-override').value='';" : ''}
           const idx=csvHeaders.indexOf(v);
           s.textContent=idx>=0?csvRawRows.slice(0,3).map(r=>r[idx]).filter(Boolean).slice(0,2).join(' · '):'';
         ">
           ${['(skip)', ...csvHeaders].map(h => `<option value="${esc(h)}" ${auto===h?'selected':''}>${esc(h)}</option>`).join('')}
         </select>
         <div id="prev-${f.key}" style="font-size:11px;color:#6b7280;margin-top:2px;font-style:italic;min-height:14px">${auto!=='(skip)'?esc(getSample(auto)):''}</div>
+        ${marketExtra}
       </div>
     </div>`;
   }).join('');
@@ -521,11 +532,13 @@ function confirmMapping() {
     const v = document.getElementById('map-' + f.key).value;
     if (v !== '(skip)') mapping[f.key] = csvHeaders.indexOf(v);
   });
+  const marketOverride = (document.getElementById('market-override')?.value || '').trim();
   const newLeads = [];
   csvRawRows.forEach(row => {
     if (row.every(c => !c)) return;
     const lead = blankLead();
     FIELDS.forEach(f => { if (mapping[f.key] !== undefined) lead[f.key] = row[mapping[f.key]] || ''; });
+    if (marketOverride) lead.market = marketOverride;
     if (lead.listings) lead.listings = parseInt(lead.listings.toString().replace(/\D/g,'')) || 0;
     lead.company = (lead.company || '').trim();
     if (!lead.company) return;
@@ -582,6 +595,9 @@ function renderTable() {
         : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
       <td><span class="badge badge-${statusClass(l.status)}">${esc(l.status)}</span></td>
       <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)">${esc(l.notes || '')}</td>
+      <td onclick="event.stopPropagation()">
+        <button onclick="quickDeleteLead(${l.id})" title="Delete lead" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:15px;padding:2px 4px;border-radius:4px;line-height:1;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#9ca3af'">✕</button>
+      </td>
     </tr>`).join('');
 }
 
@@ -664,6 +680,11 @@ function deleteLead() {
   allLeads = allLeads.filter(l => l.id !== selectedId);
   closePanel(); saveLocal(); rebuildMarketFilter(); applyFilters(); showToast('Lead deleted');
 }
+function quickDeleteLead(id) {
+  allLeads = allLeads.filter(l => l.id !== id);
+  if (selectedId === id) closePanel();
+  saveLocal(); rebuildMarketFilter(); applyFilters(); showToast('Lead deleted');
+}
 function blankLead() {
   return { id: nextId++, status:'New', enriched:false, notes:'', contactName:'', email:'', phone:'', linkedin:'', website:'', contactTitle:'', occupancy:'', followUp:'', lastContact:'', company:'', market:'', listings:0, revenue:'' };
 }
@@ -687,7 +708,7 @@ function renderQuickLinks(lead) {
     { label:'⭐ Yelp',             url:`https://www.yelp.com/search?find_desc=${q(name)}&find_loc=${q(market)}` },
     { label:'🏛 BBB',              url:`https://www.bbb.org/search?find_text=${q(name)}&find_country=USA&find_loc=${q(market)}` },
     ...(domain ? [{ label:'🌐 Contact page', url:`https://${domain}/contact` }] : []),
-    ...(website ? [{ label:'🌐 Website', url:website }] : []),
+    ...(lead.website ? [{ label:'🌐 Website', url:lead.website }] : []),
   ];
   document.getElementById('quickLinks').innerHTML = links.map(l=>
     `<a class="quick-link" href="${l.url}" target="_blank" rel="noopener">${l.label}</a>`).join('');
@@ -704,15 +725,15 @@ async function callEnrich(company, market, website, airbnbUrl, hostId) {
   const { job_id, error } = await r.json();
   if (error) throw new Error(error);
 
-  // Poll /status/<job_id> every 2s until done (max 90s)
-  for (let i = 0; i < 45; i++) {
+  // Poll /status/<job_id> every 2s until done (max 180s)
+  for (let i = 0; i < 90; i++) {
     await new Promise(res => setTimeout(res, 2000));
     const sr = await fetch(`${server}/status/${job_id}`, { signal: AbortSignal.timeout(5000) });
     const job = await sr.json();
     if (job.status === 'done')  return job.result;
     if (job.status === 'error') throw new Error(job.result?.error || 'Enrichment failed');
   }
-  throw new Error('Enrichment timed out after 90 seconds');
+  throw new Error('Enrichment timed out after 180 seconds');
 }
 
 async function enrichCurrentLead() {
@@ -721,7 +742,7 @@ async function enrichCurrentLead() {
   btn.innerHTML = '<span class="spinner"></span>';
   btn.disabled = true;
   const box = document.getElementById('enrichResults');
-  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">Searching — this takes 15–30 seconds...</div>';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">Deep searching website, LinkedIn, directories, public records... takes up to 2 minutes.</div>';
   try {
     const data = await callEnrich(
       document.getElementById('f-company').value || lead.company,
@@ -754,15 +775,33 @@ function renderEnrichResults(data, lead) {
     renderQuickLinks({ ...lead, website });
   }
 
-  // Found contacts (LinkedIn)
+  // ── PRIORITY 1: Direct personal emails ───────────────────────────────────
+  if (emails.length) {
+    html += `<div class="enrich-box" style="border-color:var(--primary)">
+      <div class="enrich-box-header" style="background:#e8f0fb">
+        <span style="color:var(--primary);font-weight:700">📧 Direct Emails Found</span>
+      </div><div class="enrich-body">`;
+    emails.forEach(e => {
+      html += `<div class="enrich-row">
+        <span class="enrich-val" style="font-size:13px;font-weight:600;color:var(--primary)">${esc(e)}</span>
+        <button class="btn btn-sm btn-primary" onclick="useEmail('${esc(e)}')">Use</button>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // ── PRIORITY 2: Owner / executive names ──────────────────────────────────
   if (contacts.length) {
-    html += `<div class="enrich-box"><div class="enrich-box-header"><span>👤 Executives / Owners Found (${contacts.length})</span></div><div class="enrich-body">`;
+    html += `<div class="enrich-box" style="border-color:var(--accent)">
+      <div class="enrich-box-header" style="background:#fef3e8">
+        <span style="color:#b45309;font-weight:700">👤 Owner / Executive Names</span>
+      </div><div class="enrich-body">`;
     contacts.forEach((c,i) => {
       html += `<div class="contact-card">
-        <div class="contact-card-name">${esc(c.name)}</div>
-        <div class="contact-card-title">${esc(c.title||'')}<span style="color:var(--muted);font-size:10px"> · ${esc(c.source)}</span></div>
+        <div class="contact-card-name" style="font-size:14px">${esc(c.name)}</div>
+        ${c.title ? `<div class="contact-card-title">${esc(c.title)}<span style="color:var(--muted);font-size:10px"> · ${esc(c.source)}</span></div>` : ''}
         <div class="contact-card-actions">
-          <button class="btn btn-sm btn-primary" onclick="useContact(${i})">Use as Contact</button>
+          <button class="btn btn-sm btn-accent" onclick="useContact(${i})">Use Name</button>
           ${c.linkedin ? `<a class="btn btn-sm btn-outline" href="${esc(c.linkedin)}" target="_blank">LinkedIn ↗</a>` : ''}
         </div>
       </div>`;
@@ -770,43 +809,51 @@ function renderEnrichResults(data, lead) {
     html += '</div></div>';
   }
 
-  // Personal emails
-  if (emails.length) {
-    html += `<div class="enrich-box"><div class="enrich-box-header"><span>📧 Direct Emails (${emails.length})</span></div><div class="enrich-body">`;
-    emails.forEach(e => {
-      html += `<div class="enrich-row"><span class="enrich-val">${esc(e)}</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
-    });
-    html += '</div></div>';
-  }
-
-  // Generic catch-all emails
-  if (generic_emails.length) {
-    html += `<div class="enrich-box"><div class="enrich-box-header"><span style="color:var(--muted)">📬 Generic Emails (catch-all — not personal)</span></div><div class="enrich-body">`;
-    generic_emails.forEach(e => {
-      html += `<div class="enrich-row"><span class="enrich-val" style="color:var(--muted)">${esc(e)}</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
-    });
-    html += '</div></div>';
-  }
-
-  // Phones found
-  if (phones.length) {
-    html += `<div class="enrich-box"><div class="enrich-box-header"><span>📞 Phone Numbers Found (${phones.length})</span></div><div class="enrich-body">`;
-    phones.forEach(p => {
-      html += `<div class="enrich-row"><span class="enrich-val">${esc(p)}</span><button class="btn btn-sm btn-outline" onclick="usePhone('${esc(p)}')">Use</button></div>`;
-    });
-    html += '</div></div>';
-  }
-
-  // Guessed emails
+  // ── PRIORITY 3: Guessed emails (based on name + domain) ──────────────────
   if (guessed_emails.length) {
-    html += `<div class="enrich-box"><div class="enrich-box-header"><span>🔮 Likely Emails (guessed from name + domain)</span></div><div class="enrich-body">`;
+    html += `<div class="enrich-box">
+      <div class="enrich-box-header">
+        <span style="font-weight:600">🔮 Likely Emails (pattern guess from name + domain)</span>
+      </div><div class="enrich-body">`;
     guessed_emails.forEach(e => {
-      html += `<div class="enrich-row"><span class="enrich-val">${esc(e)}</span><span class="enrich-source">pattern guess</span><button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button></div>`;
+      html += `<div class="enrich-row">
+        <span class="enrich-val">${esc(e)}</span>
+        <button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button>
+      </div>`;
     });
     html += '</div></div>';
   }
 
-  if (!emails.length && !phones.length && !contacts.length && !guessed_emails.length) {
+  // ── PRIORITY 4: Generic emails (info@, contact@) ─────────────────────────
+  if (generic_emails.length) {
+    html += `<div class="enrich-box">
+      <div class="enrich-box-header">
+        <span style="color:var(--muted)">📬 Generic Emails (not personal)</span>
+      </div><div class="enrich-body">`;
+    generic_emails.forEach(e => {
+      html += `<div class="enrich-row">
+        <span class="enrich-val" style="color:var(--muted)">${esc(e)}</span>
+        <button class="btn btn-sm btn-outline" onclick="useEmail('${esc(e)}')">Use</button>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // ── PRIORITY 5: Phones (lowest priority) ─────────────────────────────────
+  if (phones.length) {
+    html += `<div class="enrich-box">
+      <div class="enrich-box-header"><span style="color:var(--muted)">📞 Phone Numbers</span></div>
+      <div class="enrich-body">`;
+    phones.forEach(p => {
+      html += `<div class="enrich-row">
+        <span class="enrich-val" style="color:var(--muted)">${esc(p)}</span>
+        <button class="btn btn-sm btn-outline" onclick="usePhone('${esc(p)}')">Use</button>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  if (!emails.length && !contacts.length && !guessed_emails.length && !generic_emails.length && !phones.length) {
     html = '<div style="font-size:12px;color:var(--muted);padding:8px 0">Nothing found automatically. Try the manual research links below.</div>';
   }
 
