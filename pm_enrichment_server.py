@@ -101,33 +101,108 @@ def parse_page(html):
     except BaseException:
         return [], [], ''
 
-def google(query, n=8):
+def _parse_ddg(html, n):
+    soup    = BeautifulSoup(html, 'html.parser')
+    results = []
+    for a in soup.select('a.result__a')[:n*2]:
+        try:
+            href  = a.get('href','')
+            if not href.startswith('http'): continue
+            title = a.get_text(strip=True)
+            snip  = ''
+            parent = a.find_parent('div', class_='result')
+            if parent:
+                s = parent.select_one('.result__snippet')
+                if s: snip = s.get_text(strip=True)
+            results.append({'title':title,'body':snip,'href':href})
+            if len(results) >= n: break
+        except BaseException: continue
+    return results
+
+def _parse_bing(html, n):
+    soup    = BeautifulSoup(html, 'html.parser')
+    results = []
+    for li in soup.select('li.b_algo')[:n*2]:
+        try:
+            a    = li.select_one('h2 a')
+            snip = li.select_one('p, .b_lineclamp2, .b_paractl')
+            if not a: continue
+            href = a.get('href','')
+            if not href.startswith('http'): continue
+            results.append({'title':a.get_text(strip=True),
+                            'body': snip.get_text(strip=True) if snip else '',
+                            'href': href})
+            if len(results) >= n: break
+        except BaseException: continue
+    return results
+
+def _parse_google(html, n):
+    soup    = BeautifulSoup(html, 'html.parser')
+    results = []
+    for block in soup.select('div.g, div[data-hveid]')[:n*2]:
+        try:
+            title_el = block.select_one('h3')
+            link_el  = block.select_one('a[href]')
+            snip_el  = block.select_one('div[data-sncf],span.st,div.VwiC3b,div[style*="webkit-line-clamp"]')
+            if not title_el or not link_el: continue
+            href = link_el.get('href','')
+            if href.startswith('/url?q='): href = href[7:].split('&')[0]
+            if not href.startswith('http'): continue
+            results.append({'title':title_el.get_text(strip=True),
+                            'body': snip_el.get_text(strip=True) if snip_el else '',
+                            'href': href})
+            if len(results) >= n: break
+        except BaseException: continue
+    return results
+
+def search(query, n=8):
+    """Query all three engines and combine unique results."""
+    q       = requests.utils.quote(query)
+    seen    = set()
+    combined = []
+
+    def add(results, engine):
+        for r in results:
+            href = r.get('href','')
+            if href and href not in seen:
+                seen.add(href)
+                combined.append(r)
+
+    # 1. DuckDuckGo
     try:
-        url  = f'https://www.google.com/search?q={requests.utils.quote(query)}&num={n}&hl=en'
-        print(f'  Google: {query[:80]}')
-        html = fetch(url)
-        if not html: return []
-        soup    = BeautifulSoup(html, 'html.parser')
-        results = []
-        for block in soup.select('div.g, div[data-hveid]')[:n*2]:
-            try:
-                title_el = block.select_one('h3')
-                link_el  = block.select_one('a[href]')
-                snip_el  = block.select_one('div[data-sncf],span.st,div.VwiC3b,div[style*="webkit-line-clamp"]')
-                if not title_el or not link_el: continue
-                href = link_el.get('href','')
-                if href.startswith('/url?q='): href = href[7:].split('&')[0]
-                if not href.startswith('http'): continue
-                results.append({'title':title_el.get_text(strip=True),
-                                'body': snip_el.get_text(strip=True) if snip_el else '',
-                                'href': href})
-                if len(results) >= n: break
-            except BaseException: continue
-        print(f'    → {len(results)} results')
-        return results
+        print(f'  DDG: {query[:80]}')
+        html = fetch(f'https://html.duckduckgo.com/html/?q={q}', timeout=8)
+        ddg  = _parse_ddg(html, n) if html else []
+        add(ddg, 'DDG')
+        print(f'    DDG → {len(ddg)}')
     except BaseException as e:
-        print(f'  google error: {type(e).__name__}')
-        return []
+        print(f'  DDG error: {type(e).__name__}')
+
+    # 2. Bing
+    try:
+        print(f'  Bing: {query[:80]}')
+        html = fetch(f'https://www.bing.com/search?q={q}&count={n}', timeout=8)
+        bing = _parse_bing(html, n) if html else []
+        add(bing, 'Bing')
+        print(f'    Bing → {len(bing)}')
+    except BaseException as e:
+        print(f'  Bing error: {type(e).__name__}')
+
+    # 3. Google
+    try:
+        print(f'  Google: {query[:80]}')
+        html = fetch(f'https://www.google.com/search?q={q}&num={n}&hl=en', timeout=8)
+        goog = _parse_google(html, n) if html else []
+        add(goog, 'Google')
+        print(f'    Google → {len(goog)}')
+    except BaseException as e:
+        print(f'  Google error: {type(e).__name__}')
+
+    print(f'  Combined: {len(combined)} unique results')
+    return combined[:n*2]
+
+def google(query, n=8):
+    return search(query, n)
 
 def extract_person_names(text):
     try:
@@ -341,7 +416,7 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         except BaseException as e:
             print(f'  Profile search error: {e}')
 
-    # ── 9. Email pattern guessing (runs always if domain known) ───────────────
+    # ── 9. Email pattern guessing (always runs if domain known) ──────────────
     guessed = []
     if domain:
         # From discovered contact names
@@ -349,13 +424,19 @@ def do_enrich(company, market, website, airbnb_url, host_id):
             parts = c['name'].split()
             if len(parts) >= 2:
                 guessed += guess_email_patterns(parts[0], parts[-1], domain)
-        # If still nothing, guess from company name words
-        if not has_personal(all_emails) and not guessed:
-            words = re.sub(r'[^a-z\s]','', company.lower()).split()
-            words = [w for w in words if len(w)>2 and w not in ('the','and','for','llc','inc')]
-            if words:
-                guessed += [f'{words[0]}@{domain}', f'owner@{domain}',
-                            f'manager@{domain}', f'{words[0][0]}{words[1] if len(words)>1 else ""}@{domain}']
+        # Always guess from company name words as a baseline
+        words = re.sub(r'[^a-z\s]','', company.lower()).split()
+        words = [w for w in words if len(w)>2 and w not in ('the','and','for','llc','inc','vacation','rental','rentals','property','management','properties')]
+        if words:
+            w0 = words[0]
+            w1 = words[1] if len(words) > 1 else ''
+            guessed += [
+                f'owner@{domain}', f'manager@{domain}',
+                f'{w0}@{domain}',
+                f'{w0}.{w1}@{domain}' if w1 else f'{w0[0]}@{domain}',
+                f'{w0[0]}{w1}@{domain}' if w1 else '',
+            ]
+            guessed = [g for g in guessed if g]
 
     all_clean        = clean_emails(all_emails)
     personal, generic = split_emails(all_clean)
