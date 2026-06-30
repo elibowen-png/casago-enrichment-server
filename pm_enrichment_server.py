@@ -76,16 +76,11 @@ def clean_phones(raw):
         except BaseException: pass
     return sorted(out)
 
-SCRAPER_KEY = os.environ.get('SCRAPER_API_KEY', '')
+SERPER_KEY = os.environ.get('SERPER_API_KEY', '')
 
 def fetch(url, timeout=12):
     try:
-        # Route through ScraperAPI if key is set (bypasses IP blocks on search engines)
-        if SCRAPER_KEY and any(s in url for s in ['google.com/search', 'bing.com/search', 'duckduckgo.com/html']):
-            proxy_url = f'http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={requests.utils.quote(url, safe="")}'
-            r = requests.get(proxy_url, timeout=30)
-        else:
-            r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         if r.status_code == 200:
             return r.text[:400_000]
     except BaseException as e:
@@ -162,51 +157,52 @@ def _parse_google(html, n):
         except BaseException: continue
     return results
 
+def _serper_search(query, n=8):
+    """Call Serper.dev Google Search API — returns same dict format as scrapers."""
+    try:
+        r = requests.post(
+            'https://google.serper.dev/search',
+            headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'},
+            json={'q': query, 'num': n},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            print(f'  Serper error: {r.status_code}')
+            return []
+        data    = r.json()
+        results = []
+        for item in data.get('organic', [])[:n]:
+            results.append({
+                'title': item.get('title', ''),
+                'body':  item.get('snippet', ''),
+                'href':  item.get('link', ''),
+            })
+        print(f'  Serper → {len(results)} results')
+        return results
+    except BaseException as e:
+        print(f'  Serper error: {type(e).__name__}')
+        return []
+
 def search(query, n=8):
-    """Query all three engines and combine unique results."""
-    q       = requests.utils.quote(query)
-    seen    = set()
-    combined = []
+    """Use Serper API if key set; otherwise fall back to direct scraping."""
+    print(f'  Searching: {query[:80]}')
 
-    def add(results, engine):
-        for r in results:
-            href = r.get('href','')
-            if href and href not in seen:
-                seen.add(href)
-                combined.append(r)
+    if SERPER_KEY:
+        results = _serper_search(query, n)
+        if results:
+            return results
 
-    # 1. DuckDuckGo
+    # Fallback: try Bing direct scraping (returns HTML from Render sometimes)
+    q = requests.utils.quote(query)
     try:
-        print(f'  DDG: {query[:80]}')
-        html = fetch(f'https://html.duckduckgo.com/html/?q={q}', timeout=8)
-        ddg  = _parse_ddg(html, n) if html else []
-        add(ddg, 'DDG')
-        print(f'    DDG → {len(ddg)}')
-    except BaseException as e:
-        print(f'  DDG error: {type(e).__name__}')
-
-    # 2. Bing
-    try:
-        print(f'  Bing: {query[:80]}')
         html = fetch(f'https://www.bing.com/search?q={q}&count={n}', timeout=8)
-        bing = _parse_bing(html, n) if html else []
-        add(bing, 'Bing')
-        print(f'    Bing → {len(bing)}')
-    except BaseException as e:
-        print(f'  Bing error: {type(e).__name__}')
+        results = _parse_bing(html, n) if html else []
+        if results:
+            print(f'  Bing fallback → {len(results)}')
+            return results
+    except BaseException: pass
 
-    # 3. Google
-    try:
-        print(f'  Google: {query[:80]}')
-        html = fetch(f'https://www.google.com/search?q={q}&num={n}&hl=en', timeout=8)
-        goog = _parse_google(html, n) if html else []
-        add(goog, 'Google')
-        print(f'    Google → {len(goog)}')
-    except BaseException as e:
-        print(f'  Google error: {type(e).__name__}')
-
-    print(f'  Combined: {len(combined)} unique results')
-    return combined[:n*2]
+    return []
 
 def google(query, n=8):
     return search(query, n)
