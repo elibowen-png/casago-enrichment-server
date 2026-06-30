@@ -464,6 +464,31 @@ def do_enrich(company, market, website, airbnb_url, host_id):
 def ping():
     return jsonify({'status': 'ok'})
 
+@app.route('/debug')
+def debug():
+    """Test all three search engines. Visit /debug?q=YourQuery to diagnose."""
+    query = request.args.get('q', 'Vacasa property management contact email')
+    q     = requests.utils.quote(query)
+    out   = {'query': query, 'engines': {}}
+
+    for name, url, parser in [
+        ('ddg',    f'https://html.duckduckgo.com/html/?q={q}',              _parse_ddg),
+        ('bing',   f'https://www.bing.com/search?q={q}&count=5',            _parse_bing),
+        ('google', f'https://www.google.com/search?q={q}&num=5&hl=en',      _parse_google),
+    ]:
+        try:
+            html = fetch(url, timeout=8)
+            results = parser(html, 5) if html else []
+            out['engines'][name] = {
+                'html_bytes': len(html) if html else 0,
+                'results_found': len(results),
+                'results': results[:3],
+            }
+        except BaseException as e:
+            out['engines'][name] = {'error': str(e)}
+
+    return jsonify(out)
+
 @app.route('/enrich')
 def enrich():
     """Starts enrichment in a background thread, returns job_id immediately."""
