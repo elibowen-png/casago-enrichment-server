@@ -36,7 +36,9 @@ SKIP_DOMAINS = {'airbnb','vrbo','tripadvisor','yelp','google','facebook','zillow
                 'homeaway','hipcamp'}
 
 CONTACT_PATHS = ['','/contact','/contact-us','/about','/about-us',
-                 '/team','/our-team','/leadership','/people']
+                 '/team','/our-team','/leadership','/people',
+                 '/staff','/management','/ownership','/owners',
+                 '/meet-the-team','/meet-us','/who-we-are','/founders']
 
 HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -189,12 +191,24 @@ def _serper_search(query, n=8):
             return []
         data    = r.json()
         results = []
+        # Organic results
         for item in data.get('organic', [])[:n]:
             results.append({
                 'title': item.get('title', ''),
                 'body':  item.get('snippet', ''),
                 'href':  item.get('link', ''),
             })
+        # Answer box — often contains contact info directly
+        ab = data.get('answerBox', {})
+        if ab:
+            ab_text = ab.get('answer','') or ab.get('snippet','') or ab.get('snippetHighlighted','')
+            if ab_text:
+                results.insert(0, {'title': ab.get('title',''), 'body': str(ab_text), 'href': ab.get('link','')})
+        # People Also Ask — sometimes reveals contact info
+        for paa in data.get('peopleAlsoAsk', [])[:4]:
+            snippet = paa.get('snippet','') or paa.get('answer','')
+            if snippet:
+                results.append({'title': paa.get('question',''), 'body': str(snippet), 'href': paa.get('link','')})
         print(f'  Serper → {len(results)} results')
         return results
     except BaseException as e:
@@ -324,6 +338,41 @@ def do_enrich(company, market, website, airbnb_url, host_id):
             scrape_and_collect(base+path, all_emails, all_phones, contacts, sources, 'Website')
             time.sleep(0.25)
 
+    # ── 2.5 Direct domain email hunt ─────────────────────────────────────────
+    if domain and not has_personal(all_emails) and not timed_out(start):
+        try:
+            print(f'  → Domain email hunt for @{domain}')
+            # Search for any email from this domain exposed anywhere on the web
+            for r in google(f'"@{domain}" (owner OR contact OR manager OR founder OR CEO)', 10):
+                body = r.get('body','') + ' ' + r.get('title','')
+                all_emails += EMAIL_RE.findall(body)
+                for name in extract_person_names(body):
+                    add_contact(contacts, name, source='Domain Search')
+            # Also try: just the domain name to find email format
+            for r in google(f'"{domain}" email contact property management', 6):
+                body = r.get('body','') + ' ' + r.get('title','')
+                all_emails += EMAIL_RE.findall(body)
+        except BaseException as e:
+            print(f'  Domain hunt error: {e}')
+
+    # ── 2.7 emailformat.com — reveals the email pattern a company uses ────────
+    if domain and not has_personal(all_emails) and not timed_out(start):
+        try:
+            ef_html = fetch(f'https://www.emailformat.com/d/{domain}', timeout=8)
+            if ef_html:
+                ef_emails = EMAIL_RE.findall(ef_html)
+                ef_clean  = clean_emails(ef_emails)
+                print(f'  emailformat.com → {len(ef_clean)} patterns')
+                all_emails += ef_emails
+                # Also look for stated format like "first.last@domain.com"
+                soup = BeautifulSoup(ef_html, 'html.parser')
+                for el in soup.select('.format, .email-format, td, th'):
+                    t = el.get_text(strip=True)
+                    if '@' in t and domain in t:
+                        all_emails += EMAIL_RE.findall(t)
+        except BaseException as e:
+            print(f'  emailformat error: {e}')
+
     # ── 3. LinkedIn ───────────────────────────────────────────────────────────
     if not timed_out(start):
         try:
@@ -339,6 +388,27 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                         print(f'  LinkedIn: {name}')
         except BaseException as e:
             print(f'  LinkedIn error: {e}')
+
+    # ── 3.5 Per-contact email search (if names found) ─────────────────────────
+    if contacts and not has_personal(all_emails) and not timed_out(start):
+        print(f'  → Searching email for {len(contacts)} known contact(s)...')
+        for c in contacts[:4]:
+            if has_personal(all_emails) or timed_out(start): break
+            name = c.get('name','')
+            if not name or len(name.split()) < 2: continue
+            try:
+                # Direct email search for this person
+                for r in google(f'"{name}" email OR "@" {market} property management vacation rental', 6):
+                    body = r.get('body','') + ' ' + r.get('title','')
+                    all_emails += EMAIL_RE.findall(body)
+                # If domain known, search specifically for their email at that domain
+                if domain:
+                    parts = name.split()
+                    first, last = parts[0].lower(), parts[-1].lower()
+                    for r in google(f'"{first}" "{last}" "@{domain}"', 5):
+                        body = r.get('body','') + ' ' + r.get('title','')
+                        all_emails += EMAIL_RE.findall(body)
+            except BaseException: pass
 
     # ── 4. Owner / contact searches ───────────────────────────────────────────
     if not timed_out(start):
@@ -418,6 +488,24 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                         scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'Deep')
                         time.sleep(0.3)
             except BaseException: pass
+
+    # ── 7.5 State license / SOS / public record search ───────────────────────
+    if not has_personal(all_emails) and not timed_out(start):
+        print('  → Checking state licensing and public records...')
+        try:
+            for r in google(f'"{company}" {market} real estate license broker email site:gov OR site:state OR "license lookup"', 6):
+                body = r.get('body','') + ' ' + r.get('title','')
+                all_emails += EMAIL_RE.findall(body)
+                href = r.get('href','')
+                if href and '.gov' in href and not timed_out(start):
+                    scrape_and_collect(href, all_emails, all_phones, contacts, sources, 'State License')
+                    time.sleep(0.3)
+            # Secretary of State / business registration often lists contact email
+            for r in google(f'"{company}" {market} "secretary of state" OR "business registration" OR "registered agent"', 5):
+                body = r.get('body','') + ' ' + r.get('title','')
+                all_emails += EMAIL_RE.findall(body)
+        except BaseException as e:
+            print(f'  License search error: {e}')
 
     # ── 8. Crunchbase / business profiles ─────────────────────────────────────
     if not has_personal(all_emails) and not timed_out(start):
