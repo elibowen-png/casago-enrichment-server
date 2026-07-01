@@ -174,14 +174,34 @@ def has_personal(emails):
     return bool(split_emails(clean_emails(emails))[0])
 
 NOT_PERSON_WORDS = {
+    # Business / legal
     'llc','inc','corp','co','ltd','the','and','for','with','our','your','their',
     'property','manager','management','vacation','rental','rentals','real','estate',
     'owner','founder','ceo','president','director','contact','info','team','staff',
     'leadership','executive','group','services','solutions','realty','associates',
     'properties','homes','house','rent','booking','hospitality','travel','host',
+    # Web / action words
     'hello','email','phone','call','reach','send','click','here','more','about',
     'view','see','get','read','visit','learn','find','search','sign','log',
+    # Common page heading words (the main culprits)
+    'statement','total','testimonials','testimonial','reviews','review',
+    'knowledge','working','success','serving','since','guests','cabins',
+    'global','welcome','overview','section','home','news','blog','press',
+    'terms','privacy','policy','faq','updates','update','featured','awards',
+    'partners','partner','meet','join','explore','discover','experience',
+    'we','us','who','you','all','new','top','best','great','good','local',
+    'deep','our','built','trusted','certified','licensed','award','professional',
 }
+
+# Words that appear in bad heading extractions but not in NOT_PERSON_WORDS above —
+# used as a secondary regex filter in add_contact
+_HEADING_JUNK_RE = re.compile(
+    r'\b(Testimonials?|Statement|Knowledge|Success|Guests|Serving|Overview|Policy|'
+    r'Privacy|Welcome|Featured|Partners?|Awards?|Reviews?|Updates?|Discover|'
+    r'Experience|Explore|Working|Certified|Licensed|Professional|Since\s+\d{4}|'
+    r'Cabins?)\b',
+    re.IGNORECASE
+)
 
 def is_real_person_name(name):
     if not name: return False
@@ -194,15 +214,27 @@ def is_real_person_name(name):
 
 def add_contact(contacts, name, title='', linkedin='', source='', trusted=False):
     if not name: return
-    name = name.strip()
+    name = re.sub(r'\s+', ' ', name.strip())
     if any(c['name'] == name for c in contacts): return
+
+    # Universal pre-checks that apply regardless of trusted status
+    parts = name.split()
+    if len(parts) < 2 or len(parts) > 3: return          # person names are 2-3 words
+    if len(name) > 45: return                              # "Deep Local Knowledge Working..." is long
+    if name.isupper(): return                              # ALL CAPS = not a name
+    if re.search(r'[0-9@#$%^&*()\[\]{}<>|/\\=+]', name): return  # digits / symbols
+    if re.search(r'[—–…]', name): return                  # em dash / en dash
+    if _HEADING_JUNK_RE.search(name): return               # common heading junk words
+
     if trusted:
-        parts = name.split()
-        if len(parts) < 2 or len(name) > 60: return
-        if name.isupper(): return
-        if re.search(r'\b(LLC|Inc|Corp|Properties|Management|Vacation|Rental|Rentals|Services|Solutions|Group|Realty)\b', name): return
+        # Slightly looser than is_real_person_name: each word must start capital,
+        # contain only letters/hyphens/apostrophes, and not be a junk word.
+        for p in parts:
+            if not re.match(r"^[A-Z][a-zA-Z\-']{1,19}$", p): return
+            if p.lower() in NOT_PERSON_WORDS: return
     else:
         if not is_real_person_name(name): return
+
     contacts.append({'name': name, 'title': title, 'linkedin': linkedin, 'source': source})
     print(f'  Contact: {name} ({title or source})')
 
@@ -233,18 +265,19 @@ ABOUT_NAME_PATTERNS = [
 
 def extract_names_from_page(soup, text, contacts, source, trusted=False):
     """Pull names from headings, bio patterns, and structured markup."""
-    # 1. Headings (h1-h3) — on about/team pages these are often the person's name
-    for tag in soup.find_all(['h1','h2','h3']):
+    # 1. Headings (h3/h4 only — smaller headings are more likely person names;
+    #    h1/h2 are usually section titles). Always use strict validation for headings.
+    for tag in soup.find_all(['h3','h4']):
         t = tag.get_text(strip=True)
-        add_contact(contacts, t, source=source, trusted=trusted)
+        add_contact(contacts, t, source=source, trusted=False)  # strict always
 
-    # 2. Bio patterns in body text
+    # 2. Bio patterns in body text — these carry contextual proof of a name
     for pat in ABOUT_NAME_PATTERNS:
         for m in re.finditer(pat, text, re.IGNORECASE):
             candidate = m.group(1).strip()
             add_contact(contacts, candidate, source=source, trusted=trusted)
 
-    # 3. Schema.org / CSS class signals
+    # 3. Schema.org / CSS class signals — explicitly marked-up name elements
     for el in soup.select(
         '[itemprop="name"],[class*="author"],[class*="founder"],[class*="owner"],'
         '[class*="ceo"],[class*="team-member"],[class*="person"],[class*="staff-name"],'
@@ -645,6 +678,7 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         try:
             exec_queries = [
                 f'"{company}" {market} owner OR founder OR CEO OR president OR "property manager" email contact',
+                f'"{company}" {market} "business development" OR "director of" OR "VP" OR "vice president" OR "general manager" contact',
                 f'"{company}" {market} "owned by" OR "founded by" OR "managed by" OR "meet our team"',
                 f'"{company}" {market} "about us" OR "our story" owner name',
             ]
@@ -714,11 +748,11 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     if not timed_out(start):
         try:
             if domain:
-                li_query = f'site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager")'
+                li_query = f'site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager" OR "business development" OR "general manager" OR director)'
             elif is_generic_name:
-                li_query = f'site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager" OR "vacation rental")'
+                li_query = f'site:linkedin.com/in "{company}" {market} (owner OR founder OR CEO OR "property manager" OR "vacation rental" OR "business development")'
             else:
-                li_query = f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker OR "property manager")'
+                li_query = f'site:linkedin.com/in "{company}" (owner OR founder OR CEO OR president OR broker OR "property manager" OR "business development" OR director)'
 
             for r in search(li_query, 8):
                 if timed_out(start): break
