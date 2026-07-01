@@ -560,15 +560,35 @@ def harvest_snippets(results, all_emails, all_phones, contacts):
         for name in extract_person_names(body):
             add_contact(contacts, name, source='Search Snippet')
 
-def fetch_result_pages(results, all_emails, all_phones, contacts, sources, label, start, max_pages=3, limit=150):
-    """Fetch and scrape the actual pages linked in search results."""
+def fetch_result_pages(results, all_emails, all_phones, contacts, sources, label,
+                       start, max_pages=3, limit=150, company='', domain=''):
+    """
+    Fetch and scrape pages linked in search results.
+    Only fetches a page if the snippet (or URL) plausibly mentions this specific company.
+    This prevents pulling contact info from the wrong company.
+    """
     fetched = 0
+    # Build a quick check: does the snippet mention the company name or domain?
+    co_words = [w for w in re.sub(r'[^a-z\s]','', company.lower()).split() if len(w) > 3]
+    dom_root = domain.split('.')[0] if domain else ''
+
+    def snippet_is_relevant(r):
+        if not co_words and not dom_root: return True  # no company info to check against
+        combined = (r.get('body','') + ' ' + r.get('title','')).lower()
+        if dom_root and dom_root in combined: return True
+        if any(w in combined for w in co_words): return True
+        return False
+
     for r in results:
         if timed_out(start, limit) or fetched >= max_pages: break
         href = r.get('href','')
         if not href or not href.startswith('http'): continue
         if any(s in href for s in list(SKIP_DOMAINS) + ['google','bing','yahoo']): continue
         if href in sources: continue
+        # Skip fetching if snippet doesn't mention this company at all
+        if not snippet_is_relevant(r):
+            print(f'  Skipping unrelated result: {href[:70]}')
+            continue
         try:
             collect_from_page(href, all_emails, all_phones, contacts, sources, label)
             fetched += 1
@@ -687,7 +707,8 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                 results = search(q, 8)
                 harvest_snippets(results, all_emails, all_phones, contacts)
                 fetch_result_pages(results, all_emails, all_phones, contacts, sources,
-                                   'Executive Search', start, max_pages=2)
+                                   'Executive Search', start, max_pages=2,
+                                   company=company, domain=domain)
         except BaseException as e:
             print(f'  Phase 3 error: {e}')
 
@@ -789,7 +810,8 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                 results = search(q, 5)
                 harvest_snippets(results, all_emails, all_phones, contacts)
                 fetch_result_pages(results, all_emails, all_phones, contacts, sources,
-                                   'LLC Directory', start, max_pages=2)
+                                   'LLC Directory', start, max_pages=2,
+                                   company=company, domain=domain)
         except BaseException as e:
             print(f'  Phase 6 error: {e}')
 
@@ -812,7 +834,8 @@ def do_enrich(company, market, website, airbnb_url, host_id):
                 results = search(q, 5)
                 harvest_snippets(results, all_emails, all_phones, contacts)
                 fetch_result_pages(results, all_emails, all_phones, contacts, sources,
-                                   'Directory', start, max_pages=2)
+                                   'Directory', start, max_pages=2,
+                                   company=company, domain=domain)
             except BaseException:
                 pass
 
