@@ -349,25 +349,26 @@ def deep_scrape_about(base, all_emails, all_phones, contacts, sources):
             all_phones += clean_phones(PHONE_RE.findall(text))
 
             # 3. Names from headings — h1/h2/h3 on about pages often ARE the owner name
-            for tag in soup.find_all(['h1','h2','h3']):
+            for tag in soup.find_all(['h1','h2','h3','h4']):
                 t = tag.get_text(strip=True)
-                if is_real_person_name(t):
-                    add_contact(contacts, t, source='About Page (heading)')
+                # Use trusted=True: about page headings are reliable even if strict validation would reject
+                add_contact(contacts, t, source='About Page', trusted=True)
+                if t in [c['name'] for c in contacts]:
                     found_names.append(t)
 
-            # 4. Names from specific about-page patterns
+            # 4. Names from specific about-page bio patterns
             for pat in ABOUT_NAME_PATTERNS:
                 for m in re.finditer(pat, text, re.IGNORECASE):
                     candidate = m.group(1).strip()
-                    if is_real_person_name(candidate):
-                        add_contact(contacts, candidate, source='About Page')
+                    add_contact(contacts, candidate, source='About Page', trusted=True)
+                    if candidate in [c['name'] for c in contacts]:
                         found_names.append(candidate)
 
-            # 5. Names from structured markup (schema.org Person, author tags)
-            for el in soup.select('[itemprop="name"], [class*="author"], [class*="founder"], [class*="owner"], [class*="ceo"]'):
+            # 5. Names from structured markup (schema.org Person, author/founder/owner classes)
+            for el in soup.select('[itemprop="name"], [class*="author"], [class*="founder"], [class*="owner"], [class*="ceo"], [class*="team-member"], [class*="person"]'):
                 t = el.get_text(strip=True)
-                if is_real_person_name(t):
-                    add_contact(contacts, t, source='About Page (schema)')
+                add_contact(contacts, t, source='About Page', trusted=True)
+                if t in [c['name'] for c in contacts]:
                     found_names.append(t)
 
             if found_names:
@@ -420,10 +421,20 @@ def is_real_person_name(name):
         if p.lower() in NOT_PERSON_WORDS: return False
     return True
 
-def add_contact(contacts, name, title='', linkedin='', source=''):
-    """Add contact only if name passes real-person validation."""
-    if not is_real_person_name(name): return
+def add_contact(contacts, name, title='', linkedin='', source='', trusted=False):
+    """Add contact if name passes validation. trusted=True (e.g. about page) uses looser rules."""
+    if not name: return
+    name = name.strip()
     if any(c['name'] == name for c in contacts): return
+    if trusted:
+        # About page / trusted source: just require 2+ words, not all-caps, reasonable length
+        parts = name.split()
+        if len(parts) < 2 or len(name) > 60: return
+        if name.isupper(): return
+        # Still filter obvious non-names
+        if re.search(r'\b(LLC|Inc|Corp|Properties|Management|Vacation|Rental|Rentals)\b', name): return
+    else:
+        if not is_real_person_name(name): return
     contacts.append({'name': name, 'title': title, 'linkedin': linkedin, 'source': source})
     print(f'  Contact: {name} ({title or source})')
 
