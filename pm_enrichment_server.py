@@ -497,6 +497,20 @@ def _serper_search(query, n=8):
             snippet = paa.get('snippet','') or paa.get('answer','')
             if snippet:
                 results.append({'title': paa.get('question',''), 'body': str(snippet), 'href': paa.get('link','')})
+        # Knowledge Graph — often has phone, address, description directly
+        kg = data.get('knowledgeGraph', {})
+        if kg:
+            attrs = kg.get('attributes', {})
+            attr_text = ' '.join(f'{k} {v}' for k,v in attrs.items()) if isinstance(attrs, dict) else str(attrs)
+            kg_body = ' '.join(filter(None, [
+                kg.get('description',''), kg.get('phone',''), kg.get('address',''), attr_text
+            ]))
+            if kg_body.strip():
+                results.insert(0, {
+                    'title': kg.get('title',''),
+                    'body': kg_body,
+                    'href': kg.get('website','') or kg.get('link',''),
+                })
         print(f'  Serper → {len(results)} results')
         return results
     except BaseException as e:
@@ -595,6 +609,58 @@ def fetch_result_pages(results, all_emails, all_phones, contacts, sources, label
             time.sleep(0.4)
         except BaseException:
             pass
+
+# ── WHOIS / DNS helpers ───────────────────────────────────────────────────────
+
+def domain_has_mx(domain):
+    """Return True if domain has MX records (guessed emails could be deliverable)."""
+    try:
+        r = requests.get(
+            f'https://dns.google/resolve?name={domain}&type=MX',
+            timeout=5
+        )
+        if r.status_code == 200:
+            return bool(r.json().get('Answer'))
+    except BaseException:
+        pass
+    return True  # assume valid on error — don't discard guesses
+
+def lookup_whois(domain, all_emails, all_phones, contacts):
+    """
+    RDAP lookup — free, no API key. Returns registrant contact info.
+    Many small businesses don't use privacy protection, so this often works.
+    """
+    try:
+        r = requests.get(
+            f'https://rdap.org/domain/{domain}',
+            headers=HEADERS, timeout=10
+        )
+        if r.status_code != 200:
+            return
+        raw  = r.text
+        data = r.json()
+        # Raw text scan — catches any non-redacted emails / phones
+        all_emails += clean_emails(EMAIL_RE.findall(raw))
+        all_phones += PHONE_RE.findall(raw)
+        # Extract registrant/admin/tech contact name from vCard
+        SKIP_WORDS = ('privacy','proxy','protect','redact','registrar','whois',
+                      'domain','perfect','data','guard','withheld','not')
+        for ent in data.get('entities', []):
+            if not any(role in ent.get('roles', [])
+                       for role in ('registrant','technical','administrative')):
+                continue
+            vc = ent.get('vcardArray', [])
+            if not isinstance(vc, list) or len(vc) < 2:
+                continue
+            for item in vc[1]:
+                if isinstance(item, (list, tuple)) and len(item) >= 4 and item[0] == 'fn':
+                    name = str(item[3]).strip()
+                    if any(w in name.lower() for w in SKIP_WORDS):
+                        continue
+                    add_contact(contacts, name, source='WHOIS', trusted=True)
+        print(f'  WHOIS done: {domain}')
+    except BaseException as e:
+        print(f'  WHOIS error {domain}: {type(e).__name__}')
 
 # ── Core enrichment ────────────────────────────────────────────────────────────
 
@@ -746,7 +812,12 @@ def do_enrich(company, market, website, airbnb_url, host_id):
         except BaseException:
             pass
 
-    # 4c — Hunt @domain emails via search
+    # 4c — WHOIS registrant lookup (free via RDAP, no key needed)
+    if domain and not timed_out(start):
+        print(f'  Phase 4c: WHOIS ({domain})...')
+        lookup_whois(domain, all_emails, all_phones, contacts)
+
+    # 4d — Hunt @domain emails via search
     if domain and not timed_out(start):
         try:
             print(f'  Phase 4c: Hunting @{domain} emails...')
@@ -890,6 +961,12 @@ def do_enrich(company, market, website, airbnb_url, host_id):
     personal, generic = split_emails(all_clean)
     phones_clean     = clean_phones(all_phones)
     guessed_clean    = [g for g in dict.fromkeys(guessed) if g not in all_clean][:12]
+
+    # MX check — if domain has no mail exchange records, guessed emails are useless
+    if guessed_clean and domain:
+        if not domain_has_mx(domain):
+            print(f'  No MX records for {domain} — dropping guessed emails')
+            guessed_clean = []
 
     elapsed = round(time.time() - start, 1)
     print(f'  ✓ {elapsed}s — personal:{len(personal)} generic:{len(generic)} '
