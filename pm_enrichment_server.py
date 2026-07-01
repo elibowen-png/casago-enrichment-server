@@ -183,15 +183,46 @@ NOT_PERSON_WORDS = {
     # Web / action words
     'hello','email','phone','call','reach','send','click','here','more','about',
     'view','see','get','read','visit','learn','find','search','sign','log',
-    # Common page heading words (the main culprits)
+    # Common page heading words
     'statement','total','testimonials','testimonial','reviews','review',
-    'knowledge','working','success','serving','since','guests','cabins',
+    'knowledge','working','success','serving','since','guests','cabins','cabin',
     'global','welcome','overview','section','home','news','blog','press',
     'terms','privacy','policy','faq','updates','update','featured','awards',
     'partners','partner','meet','join','explore','discover','experience',
     'we','us','who','you','all','new','top','best','great','good','local',
     'deep','our','built','trusted','certified','licensed','award','professional',
+    # Property / rental type words
+    'lodge','lodges','lodge','cottage','cottages','villa','villas','manor','manors',
+    'estate','estates','retreat','retreats','haven','sanctuary','bungalow','suite',
+    'suites','condo','condos','chalet','chalets','townhouse','getaway','hideaway',
+    'listing','listings','rental','cabin','cabins','chalet','residence','residences',
+    # Geographic / nature words (common in property names)
+    'mountain','mountains','lake','lakes','beach','beaches','bay','cove','ridge',
+    'valley','creek','river','falls','springs','peak','summit','canyon','shores',
+    'pines','oaks','meadow','hollow','bluff','knoll','island','brook','pond',
+    'woods','forest','harbor','harbour','lakeside','oceanfront','waterfront',
+    'riverside','hillside','countryside','lookout','overlook','scenic','trail',
+    'highlands','lowlands','coast','coastline','cliffs','dunes','wetlands',
+    # Amenity / feature words
+    'pool','pools','spa','deck','porch','yard','dock','views','wifi','parking',
+    'fireplace','kitchen','bedroom','bedrooms','bath','bathrooms','acre','acres',
+    'patriot','american','military','national','freedom','liberty','eagle',
+    # Colors and generic adjectives (common in property and brand names)
+    'blue','red','green','white','black','golden','silver','purple','orange','gray',
+    'enchanted','private','outstanding','amazing','beautiful','scenic','peaceful',
+    'cozy','rustic','charming','elegant','premium','luxury','modern','classic',
+    'vintage','historic','unique','perfect','ideal','sunny','quiet','bright',
+    'grand','little','old','fun','free','happy','lovely','stunning','breathtaking',
+    'premier','excellent','fantastic','wonderful','exceptional','incredible',
+    # Customer / service / review phrases
+    'customer','service','friendly','quality','stellar','superb','awesome',
+    'evening','morning','afternoon','night','sunrise','sunset','twilight',
+    'dog','pet','pets','cat','friendly','family','adults','couples','outdoor',
+    'indoor','heated','covered','fenced','gated','secluded','remote','central',
 }
+
+# Legitimate name prefixes that have an internal capital (McDonald, DeLuca, Van Dyke…)
+_NAME_PREFIX_RE = re.compile(r'^(Mc|Mac|De|Van|Von|Di|La|Le|Du|St)[A-Z]')
 
 # Words that appear in bad heading extractions but not in NOT_PERSON_WORDS above —
 # used as a secondary regex filter in add_contact
@@ -225,6 +256,11 @@ def add_contact(contacts, name, title='', linkedin='', source='', trusted=False)
     if re.search(r'[0-9@#$%^&*()\[\]{}<>|/\\=+]', name): return  # digits / symbols
     if re.search(r'[—–…]', name): return                  # em dash / en dash
     if _HEADING_JUNK_RE.search(name): return               # common heading junk words
+    # Reject concatenated heading text like "PoliciesPrivacy" or "PortalRental"
+    # Real names don't have lowercase-then-uppercase (except Mc/Mac/De/Van prefixes)
+    for p in parts:
+        if re.search(r'[a-z][A-Z]', p) and not _NAME_PREFIX_RE.match(p):
+            return
 
     if trusted:
         # Slightly looser than is_real_person_name: each word must start capital,
